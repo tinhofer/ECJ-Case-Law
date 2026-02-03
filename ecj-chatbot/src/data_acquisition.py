@@ -379,16 +379,291 @@ def load_documents_from_disk(data_dir: Path) -> Iterator[CaseLawDocument]:
             print(f"Failed to load {json_file}: {e}")
 
 
-if __name__ == "__main__":
-    # Example: Download recent case law
-    from pathlib import Path
+# =============================================================================
+# CHECKPOINT & INCREMENTAL UPDATE SYSTEM
+# =============================================================================
 
+CHECKPOINT_FILE = "download_checkpoint.json"
+
+
+def load_checkpoint(data_dir: Path) -> dict:
+    """
+    Load the download checkpoint from disk.
+
+    Returns:
+        Dict with 'last_download_date', 'last_celex', 'total_downloaded'
+    """
+    checkpoint_path = Path(data_dir) / CHECKPOINT_FILE
+    if checkpoint_path.exists():
+        with open(checkpoint_path, 'r') as f:
+            return json.load(f)
+    return {
+        "last_download_date": None,
+        "last_case_date": None,
+        "total_downloaded": 0,
+        "initial_year": None
+    }
+
+
+def save_checkpoint(data_dir: Path, checkpoint: dict):
+    """Save the download checkpoint to disk."""
+    checkpoint_path = Path(data_dir) / CHECKPOINT_FILE
+    checkpoint["updated_at"] = datetime.now().isoformat()
+    with open(checkpoint_path, 'w') as f:
+        json.dump(checkpoint, f, indent=2)
+
+
+def get_latest_case_date(data_dir: Path) -> str | None:
+    """
+    Get the date of the most recent case in our local data.
+
+    Returns:
+        ISO date string or None
+    """
+    latest_date = None
+
+    for json_file in Path(data_dir).glob("*.json"):
+        if json_file.name == CHECKPOINT_FILE:
+            continue
+        try:
+            with open(json_file, 'r') as f:
+                data = json.load(f)
+                case_date = data.get('date', '')
+                if case_date and (latest_date is None or case_date > latest_date):
+                    latest_date = case_date
+        except Exception:
+            continue
+
+    return latest_date
+
+
+def incremental_update(
+    data_dir: Path,
+    delay_seconds: float = 1.0,
+    max_new_cases: int = 500
+) -> int:
+    """
+    Download only new cases since the last update.
+
+    This function checks the most recent case date in the local data
+    and downloads any newer cases from EUR-Lex.
+
+    Args:
+        data_dir: Directory containing case JSON files
+        delay_seconds: Delay between requests
+        max_new_cases: Maximum number of new cases to download
+
+    Returns:
+        Number of new cases downloaded
+    """
+    data_dir = Path(data_dir)
+    data_dir.mkdir(parents=True, exist_ok=True)
+
+    checkpoint = load_checkpoint(data_dir)
+    latest_local_date = get_latest_case_date(data_dir)
+
+    print(f"Checking for new cases...")
+    if latest_local_date:
+        print(f"  Most recent local case: {latest_local_date}")
+    else:
+        print(f"  No local cases found - performing initial download")
+        # If no local data, do initial download from 2020
+        return download_case_law_batch(
+            output_dir=data_dir,
+            limit=max_new_cases,
+            year_from=2020,
+            delay_seconds=delay_seconds
+        )
+
+    # Fetch recent metadata to find new cases
+    metadata_list = get_case_law_metadata(limit=max_new_cases)
+
+    # Filter to only cases newer than our latest
+    new_cases = [
+        m for m in metadata_list
+        if m.get('date', '') > latest_local_date
+    ]
+
+    if not new_cases:
+        print(f"  No new cases found. Database is up to date.")
+        return 0
+
+    print(f"  Found {len(new_cases)} new cases. Downloading...")
+
+    downloaded = 0
+    for metadata in tqdm(new_cases, desc="Downloading new cases"):
+        celex = metadata.get("celex", "")
+        if not celex:
+            continue
+
+        output_file = data_dir / f"{celex.replace(':', '_')}.json"
+        if output_file.exists():
+            continue
+
+        doc = create_case_document(metadata)
+        if doc:
+            with open(output_file, 'w', encoding='utf-8') as f:
+                json.dump(doc.to_dict(), f, ensure_ascii=False, indent=2)
+            downloaded += 1
+
+        time.sleep(delay_seconds)
+
+    # Update checkpoint
+    checkpoint["last_download_date"] = datetime.now().isoformat()
+    checkpoint["last_case_date"] = get_latest_case_date(data_dir)
+    checkpoint["total_downloaded"] = checkpoint.get("total_downloaded", 0) + downloaded
+    save_checkpoint(data_dir, checkpoint)
+
+    print(f"  Downloaded {downloaded} new cases.")
+    return downloaded
+
+
+# =============================================================================
+# LIVE SPARQL SEARCH (FALLBACK FOR OLDER CASES)
+# =============================================================================
+
+def live_search_cases(
+    query_terms: list[str],
+    year_from: int | None = None,
+    year_to: int | None = None,
+    limit: int = 10
+) -> list[dict]:
+    """
+    Perform a live SPARQL search for cases matching the query terms.
+
+    This is used as a fallback when the local index doesn't have relevant results.
+    Searches in case titles and subjects.
+
+    Args:
+        query_terms: List of search terms (will be OR-combined)
+        year_from: Optional start year filter
+        year_to: Optional end year filter
+        limit: Maximum results
+
+    Returns:
+        List of case metadata dicts with basic info
+    """
+    # Build FILTER for search terms (case-insensitive search in title)
+    term_filters = []
+    for term in query_terms:
+        # Escape special characters for SPARQL
+        escaped = term.replace('"', '\\"').replace("'", "\\'")
+        term_filters.append(f'CONTAINS(LCASE(?title), LCASE("{escaped}"))')
+
+    filter_clause = " || ".join(term_filters) if term_filters else "true"
+
+    # Date filters
+    date_filters = ""
+    if year_from:
+        date_filters += f"FILTER(year(?date) >= {year_from})\n"
+    if year_to:
+        date_filters += f"FILTER(year(?date) <= {year_to})\n"
+
+    query = f"""
+    PREFIX cdm: <http://publications.europa.eu/ontology/cdm#>
+    PREFIX skos: <http://www.w3.org/2004/02/skos/core#>
+
+    SELECT DISTINCT ?celex ?title ?date ?caseNumber
+    WHERE {{
+        ?work a cdm:case-law .
+        ?work cdm:resource_legal_celex ?celex .
+
+        OPTIONAL {{ ?work cdm:work_date_document ?date . }}
+        OPTIONAL {{
+            ?work cdm:work_title ?title .
+            FILTER(lang(?title) = "de" || lang(?title) = "en" || lang(?title) = "fr")
+        }}
+        OPTIONAL {{ ?work cdm:case-law_case_number ?caseNumber . }}
+
+        FILTER({filter_clause})
+        {date_filters}
+    }}
+    ORDER BY DESC(?date)
+    LIMIT {limit}
+    """
+
+    sparql = SPARQLWrapper(SPARQL_ENDPOINT)
+    sparql.setQuery(query)
+    sparql.setReturnFormat(JSON)
+    sparql.setTimeout(60)
+
+    try:
+        results = sparql.query().convert()
+
+        cases = []
+        for binding in results["results"]["bindings"]:
+            cases.append({
+                "celex": binding.get("celex", {}).get("value", ""),
+                "title": binding.get("title", {}).get("value", ""),
+                "date": binding.get("date", {}).get("value", ""),
+                "case_number": binding.get("caseNumber", {}).get("value"),
+            })
+        return cases
+
+    except Exception as e:
+        print(f"Live SPARQL search failed: {e}")
+        return []
+
+
+def fetch_case_on_demand(celex: str) -> CaseLawDocument | None:
+    """
+    Fetch a single case on-demand (for fallback search results).
+
+    Args:
+        celex: CELEX number of the case
+
+    Returns:
+        CaseLawDocument or None
+    """
+    # First get metadata
+    metadata = {
+        "celex": celex,
+        "title": "",
+        "date": "",
+        "case_number": None,
+        "court": "Court of Justice",
+        "document_type": "Judgment"
+    }
+
+    # Try to get more metadata via SPARQL
+    query = f"""
+    PREFIX cdm: <http://publications.europa.eu/ontology/cdm#>
+
+    SELECT ?title ?date ?caseNumber
+    WHERE {{
+        ?work cdm:resource_legal_celex "{celex}" .
+        OPTIONAL {{ ?work cdm:work_date_document ?date . }}
+        OPTIONAL {{ ?work cdm:work_title ?title . }}
+        OPTIONAL {{ ?work cdm:case-law_case_number ?caseNumber . }}
+    }}
+    LIMIT 1
+    """
+
+    sparql = SPARQLWrapper(SPARQL_ENDPOINT)
+    sparql.setQuery(query)
+    sparql.setReturnFormat(JSON)
+
+    try:
+        results = sparql.query().convert()
+        if results["results"]["bindings"]:
+            binding = results["results"]["bindings"][0]
+            metadata["title"] = binding.get("title", {}).get("value", "")
+            metadata["date"] = binding.get("date", {}).get("value", "")
+            metadata["case_number"] = binding.get("caseNumber", {}).get("value")
+    except Exception:
+        pass
+
+    return create_case_document(metadata)
+
+
+if __name__ == "__main__":
+    # Example: Download recent case law with incremental updates
     data_dir = Path(__file__).parent.parent / "data" / "cases"
 
-    # Download 50 recent cases
-    download_case_law_batch(
-        output_dir=data_dir,
-        limit=50,
-        year_from=2020,
-        delay_seconds=1.5
+    # First run: downloads all cases since 2020
+    # Subsequent runs: only downloads new cases
+    incremental_update(
+        data_dir=data_dir,
+        delay_seconds=1.5,
+        max_new_cases=100
     )

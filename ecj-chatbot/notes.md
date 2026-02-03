@@ -155,12 +155,59 @@ Rs. C-XXX/23 (Englisch)
 [EUR-Lex](https://eur-lex.europa.eu/legal-content/EN/TXT/?uri=CELEX:...)
 ```
 
+## Inkrementelle Updates & Live-Fallback
+
+### Architektur-Übersicht
+
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                          EINMALIGE INITIALISIERUNG                          │
+│   1. Download aller Fälle seit 2020 (konfigurierbar)                        │
+│   2. Erstellung des Vektor-Index                                            │
+└─────────────────────────────────────────────────────────────────────────────┘
+                                    ↓
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                         BEI JEDEM START / UPDATE                            │
+│   1. Prüfe auf neue Entscheidungen seit letztem Download                    │
+│   2. Lade nur die neuen Fälle herunter                                      │
+│   3. Aktualisiere den Index (falls neue Fälle)                              │
+└─────────────────────────────────────────────────────────────────────────────┘
+                                    ↓
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                           BEI JEDER ANFRAGE                                 │
+│   1. Suche im lokalen Vektor-Index                                          │
+│   2. Falls keine guten Ergebnisse: Live-SPARQL-Suche (ältere Fälle)         │
+│   3. On-Demand Download der gefundenen älteren Fälle                        │
+│   4. Antwort generieren mit allen gefundenen Quellen                        │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
+
+### Implementierte Funktionen
+
+1. **Checkpoint-System** (`data_acquisition.py`)
+   - Speichert letztes Download-Datum
+   - Ermöglicht inkrementelle Updates
+
+2. **Inkrementelle Updates** (`incremental_update()`)
+   - Lädt nur neue Entscheidungen seit letztem Update
+   - Automatisch beim App-Start oder manuell per Button
+
+3. **Live-Fallback-Suche** (`live_search_cases()`)
+   - SPARQL-Suche in gesamter EUR-Lex-Datenbank
+   - Aktiviert wenn lokaler Index keine relevanten Ergebnisse hat
+   - On-Demand Download der gefundenen Fälle
+
+4. **UI-Integration**
+   - Update-Button in Sidebar
+   - Toggle für Live-Fallback
+   - Anzeige wenn Fallback verwendet wurde
+
 ## Offene Erweiterungen
 
-- [ ] Mehr Entscheidungen herunterladen (aktuell auf 50 limitiert)
 - [ ] Caching für API-Anfragen implementieren
 - [ ] Filterung nach Rechtsgebiet/Gericht
 - [ ] Agentic RAG für komplexe Anfragen
 - [ ] FastAPI REST-Endpunkt
 - [ ] Docker-Container
-- [ ] Automatische Updates neuer Entscheidungen
+- [x] Automatische Updates neuer Entscheidungen
+- [x] Live-Fallback für ältere Fälle

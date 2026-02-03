@@ -6,6 +6,7 @@ for answering questions based on EuGH case law.
 """
 
 import os
+import re
 from pathlib import Path
 from typing import Callable
 
@@ -13,6 +14,11 @@ from anthropic import Anthropic
 from dotenv import load_dotenv
 
 from embeddings import CaseLawVectorStore
+from data_acquisition import (
+    live_search_cases,
+    fetch_case_on_demand,
+    CaseLawDocument
+)
 
 
 load_dotenv()
@@ -136,47 +142,164 @@ class EuGHChatbot:
         self.client = Anthropic(api_key=api_key)
         self.conversation_history = []
 
-    def search_relevant_cases(self, query: str) -> list[dict]:
+    def search_relevant_cases(
+        self,
+        query: str,
+        enable_live_fallback: bool = True,
+        min_relevance_threshold: float = 1.5
+    ) -> tuple[list[dict], bool]:
         """
         Search for relevant case law for a query.
+
+        First searches the local vector index. If no sufficiently relevant
+        results are found and enable_live_fallback is True, performs a
+        live SPARQL search for older cases.
+
+        Args:
+            query: User's question
+            enable_live_fallback: Whether to search older cases via SPARQL if needed
+            min_relevance_threshold: Maximum distance to consider a result relevant
+
+        Returns:
+            Tuple of (search_results, used_live_fallback)
+        """
+        # First: Search local vector index
+        results = self.vector_store.search(
+            query=query,
+            n_results=self.n_results * 2
+        )
+
+        # Deduplicate to unique cases
+        unique_cases = self.vector_store.get_unique_cases(results)
+        local_results = unique_cases[:self.n_results]
+
+        # Check if we have sufficiently relevant results
+        has_relevant_results = False
+        if local_results:
+            # Check the best result's distance (lower = more relevant)
+            best_distance = local_results[0].get('distance', float('inf'))
+            has_relevant_results = best_distance < min_relevance_threshold
+
+        # If we have good local results, return them
+        if has_relevant_results or not enable_live_fallback:
+            return local_results, False
+
+        # Fallback: Live SPARQL search for older/unindexed cases
+        print(f"  Local index has no highly relevant results. Searching older cases...")
+
+        # Extract key terms from the query for SPARQL search
+        query_terms = self._extract_search_terms(query)
+
+        if not query_terms:
+            return local_results, False
+
+        # Search without year restriction to include older cases
+        live_cases = live_search_cases(
+            query_terms=query_terms,
+            limit=self.n_results
+        )
+
+        if not live_cases:
+            return local_results, False
+
+        # Fetch full documents for live results
+        live_results = []
+        for case_meta in live_cases:
+            celex = case_meta.get('celex')
+            if not celex:
+                continue
+
+            # Fetch the document on-demand
+            doc = fetch_case_on_demand(celex)
+            if doc:
+                # Format as search result
+                live_results.append({
+                    "text": doc.text[:2000],  # First 2000 chars as preview
+                    "metadata": {
+                        "celex": doc.celex,
+                        "title": doc.title,
+                        "date": doc.date,
+                        "case_number": doc.case_number,
+                        "court": doc.court,
+                        "document_type": doc.document_type,
+                        "eurlex_url": doc.eurlex_url,
+                        "curia_url": doc.curia_url,
+                        "ecli": doc.ecli,
+                        "language": doc.language
+                    },
+                    "distance": None,  # No distance for live results
+                    "source": "live_search"
+                })
+
+        # Combine: prioritize live results (they matched the search terms),
+        # but include local results as additional context
+        combined = live_results[:self.n_results]
+
+        # Fill remaining slots with local results (if any)
+        seen_celex = {r['metadata']['celex'] for r in combined}
+        for local_r in local_results:
+            if len(combined) >= self.n_results:
+                break
+            if local_r['metadata'].get('celex') not in seen_celex:
+                combined.append(local_r)
+
+        return combined, len(live_results) > 0
+
+    def _extract_search_terms(self, query: str) -> list[str]:
+        """
+        Extract meaningful search terms from a user query.
 
         Args:
             query: User's question
 
         Returns:
-            List of relevant search results
+            List of search terms for SPARQL query
         """
+        # Remove common German question words and stopwords
+        stopwords = {
+            'was', 'wie', 'wer', 'wo', 'wann', 'warum', 'welche', 'welcher',
+            'welches', 'hat', 'haben', 'ist', 'sind', 'der', 'die', 'das',
+            'ein', 'eine', 'eines', 'und', 'oder', 'aber', 'für', 'mit',
+            'bei', 'nach', 'von', 'zu', 'zur', 'zum', 'im', 'in', 'an',
+            'auf', 'über', 'unter', 'durch', 'gegen', 'ohne', 'bis',
+            'the', 'is', 'are', 'was', 'were', 'has', 'have', 'what',
+            'which', 'who', 'how', 'when', 'where', 'why', 'eugh', 'gerichtshof'
+        }
 
-        results = self.vector_store.search(
-            query=query,
-            n_results=self.n_results * 2  # Get more to allow deduplication
-        )
+        # Extract words (alphanumeric sequences)
+        words = re.findall(r'\b[a-zA-ZäöüÄÖÜß]{3,}\b', query.lower())
 
-        # Deduplicate to unique cases
-        unique_cases = self.vector_store.get_unique_cases(results)
+        # Filter stopwords and keep meaningful terms
+        terms = [w for w in words if w not in stopwords]
 
-        return unique_cases[:self.n_results]
+        # Return top terms (max 5)
+        return terms[:5]
 
-    def answer(self, question: str) -> dict:
+    def answer(self, question: str, enable_live_fallback: bool = True) -> dict:
         """
         Answer a question based on EuGH case law.
 
         Args:
             question: User's question
+            enable_live_fallback: Whether to search older cases if local index has no results
 
         Returns:
             Dict with answer, sources, and metadata
         """
 
-        # Retrieve relevant documents
-        search_results = self.search_relevant_cases(question)
+        # Retrieve relevant documents (with optional live fallback)
+        search_results, used_live_fallback = self.search_relevant_cases(
+            question,
+            enable_live_fallback=enable_live_fallback
+        )
 
         if not search_results:
             return {
                 "answer": "Es wurden keine relevanten EuGH-Entscheidungen zu Ihrer Frage gefunden. "
                          "Bitte formulieren Sie Ihre Frage anders oder stellen Sie eine andere Frage.",
                 "sources": [],
-                "context_used": False
+                "context_used": False,
+                "used_live_fallback": False
             }
 
         # Format context
@@ -235,7 +358,8 @@ Beantworte die Frage basierend auf den obigen Dokumenten. Zitiere die relevanten
             "answer": assistant_message,
             "sources": sources,
             "context_used": True,
-            "model": self.model
+            "model": self.model,
+            "used_live_fallback": used_live_fallback
         }
 
     def clear_history(self):
@@ -245,7 +369,8 @@ Beantworte die Frage basierend auf den obigen Dokumenten. Zitiere die relevanten
     def answer_stream(
         self,
         question: str,
-        on_token: Callable[[str], None] | None = None
+        on_token: Callable[[str], None] | None = None,
+        enable_live_fallback: bool = True
     ) -> dict:
         """
         Answer a question with streaming response.
@@ -253,19 +378,24 @@ Beantworte die Frage basierend auf den obigen Dokumenten. Zitiere die relevanten
         Args:
             question: User's question
             on_token: Callback function for each token
+            enable_live_fallback: Whether to search older cases if local index has no results
 
         Returns:
             Dict with answer, sources, and metadata
         """
 
-        # Retrieve relevant documents
-        search_results = self.search_relevant_cases(question)
+        # Retrieve relevant documents (with optional live fallback)
+        search_results, used_live_fallback = self.search_relevant_cases(
+            question,
+            enable_live_fallback=enable_live_fallback
+        )
 
         if not search_results:
             return {
                 "answer": "Es wurden keine relevanten EuGH-Entscheidungen gefunden.",
                 "sources": [],
-                "context_used": False
+                "context_used": False,
+                "used_live_fallback": False
             }
 
         # Format context
@@ -323,7 +453,8 @@ Beantworte die Frage basierend auf den obigen Dokumenten. Zitiere die relevanten
         return {
             "answer": full_response,
             "sources": sources,
-            "context_used": True
+            "context_used": True,
+            "used_live_fallback": used_live_fallback
         }
 
 

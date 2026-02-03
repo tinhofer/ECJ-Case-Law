@@ -16,26 +16,109 @@ import sys
 sys.path.insert(0, str(Path(__file__).parent / "src"))
 
 from rag_pipeline import create_chatbot, EuGHChatbot
-from embeddings import CaseLawVectorStore
+from embeddings import CaseLawVectorStore, build_index_from_data_dir
+from data_acquisition import (
+    incremental_update,
+    load_checkpoint,
+    download_case_law_batch
+)
 
 
 # Configuration
+DATA_DIR = Path(__file__).parent / "data" / "cases"
 INDEX_DIR = Path(__file__).parent / "data" / "index"
 
 
-def init_chatbot() -> EuGHChatbot | None:
-    """Initialize or retrieve the chatbot from session state."""
+def initialize_data_and_index(
+    auto_update: bool = True,
+    initial_year: int = 2020
+) -> bool:
+    """
+    Initialize or update the case law data and search index.
+
+    This function:
+    1. Checks if data exists, if not performs initial download
+    2. If auto_update is True, checks for and downloads new cases
+    3. Rebuilds the index if new data was added
+
+    Args:
+        auto_update: Whether to check for new cases on startup
+        initial_year: Year from which to download cases initially
+
+    Returns:
+        True if initialization was successful
+    """
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    INDEX_DIR.mkdir(parents=True, exist_ok=True)
+
+    # Check if we have any data
+    existing_cases = list(DATA_DIR.glob("*.json"))
+    has_data = len(existing_cases) > 0
+
+    if not has_data:
+        # Initial download
+        st.info(f"Erste Initialisierung: Lade EuGH-Entscheidungen seit {initial_year}...")
+        with st.spinner("Lade Daten von EUR-Lex..."):
+            downloaded = download_case_law_batch(
+                output_dir=DATA_DIR,
+                limit=500,  # Initial batch
+                year_from=initial_year,
+                delay_seconds=1.0
+            )
+            st.success(f"{downloaded} Entscheidungen heruntergeladen.")
+
+        # Build initial index
+        st.info("Erstelle Suchindex...")
+        with st.spinner("Indiziere Dokumente..."):
+            build_index_from_data_dir(DATA_DIR, INDEX_DIR)
+            st.success("Index erstellt.")
+
+        return True
+
+    elif auto_update:
+        # Check for updates
+        checkpoint = load_checkpoint(DATA_DIR)
+        last_update = checkpoint.get("last_download_date", "Nie")
+
+        with st.spinner(f"Prüfe auf neue Entscheidungen (letztes Update: {last_update[:10] if last_update != 'Nie' else last_update})..."):
+            new_cases = incremental_update(
+                data_dir=DATA_DIR,
+                delay_seconds=1.0,
+                max_new_cases=100
+            )
+
+        if new_cases > 0:
+            st.info(f"{new_cases} neue Entscheidungen gefunden. Aktualisiere Index...")
+            with st.spinner("Aktualisiere Suchindex..."):
+                build_index_from_data_dir(DATA_DIR, INDEX_DIR)
+            st.success("Index aktualisiert.")
+
+    return True
+
+
+def init_chatbot(auto_update: bool = False) -> EuGHChatbot | None:
+    """
+    Initialize or retrieve the chatbot from session state.
+
+    Args:
+        auto_update: Whether to check for new cases on startup
+    """
+    # Check for API key first
+    api_key = os.getenv("ANTHROPIC_API_KEY")
+    if not api_key:
+        st.error(
+            "Bitte setzen Sie die ANTHROPIC_API_KEY Umgebungsvariable "
+            "oder geben Sie den API-Schlüssel in der Seitenleiste ein."
+        )
+        return None
+
+    # Initialize data and index if needed (only on first run)
+    if "initialized" not in st.session_state:
+        if not INDEX_DIR.exists() or not any(INDEX_DIR.iterdir()):
+            initialize_data_and_index(auto_update=auto_update)
+        st.session_state.initialized = True
 
     if "chatbot" not in st.session_state:
-        api_key = os.getenv("ANTHROPIC_API_KEY")
-
-        if not api_key:
-            st.error(
-                "Bitte setzen Sie die ANTHROPIC_API_KEY Umgebungsvariable "
-                "oder geben Sie den API-Schlüssel in der Seitenleiste ein."
-            )
-            return None
-
         if not INDEX_DIR.exists():
             st.error(
                 f"Index-Verzeichnis nicht gefunden: {INDEX_DIR}\n\n"
@@ -117,8 +200,13 @@ def main():
             if api_key:
                 os.environ["ANTHROPIC_API_KEY"] = api_key
 
-        # Index stats
-        st.header("Index-Statistiken")
+        # Index & Data stats
+        st.header("Datenbank-Status")
+
+        # Count local cases
+        case_count = len(list(DATA_DIR.glob("*.json"))) if DATA_DIR.exists() else 0
+        st.metric("Lokale Entscheidungen", case_count)
+
         if INDEX_DIR.exists():
             try:
                 store = CaseLawVectorStore(persist_directory=INDEX_DIR)
@@ -128,6 +216,47 @@ def main():
                 st.warning("Index-Statistiken nicht verfügbar")
         else:
             st.warning("Kein Index vorhanden")
+
+        # Show last update time
+        if DATA_DIR.exists():
+            checkpoint = load_checkpoint(DATA_DIR)
+            last_update = checkpoint.get("last_download_date")
+            if last_update:
+                st.caption(f"Letztes Update: {last_update[:10]}")
+
+        st.divider()
+
+        # Update button
+        st.header("Daten aktualisieren")
+        if st.button("Neue Entscheidungen laden", help="Prüft EUR-Lex auf neue Entscheidungen"):
+            with st.spinner("Suche neue Entscheidungen..."):
+                new_cases = incremental_update(
+                    data_dir=DATA_DIR,
+                    delay_seconds=1.0,
+                    max_new_cases=50
+                )
+            if new_cases > 0:
+                st.success(f"{new_cases} neue Entscheidungen geladen!")
+                # Rebuild index
+                with st.spinner("Aktualisiere Suchindex..."):
+                    build_index_from_data_dir(DATA_DIR, INDEX_DIR)
+                st.success("Index aktualisiert!")
+                # Clear chatbot to reload index
+                if "chatbot" in st.session_state:
+                    del st.session_state.chatbot
+                st.rerun()
+            else:
+                st.info("Keine neuen Entscheidungen gefunden.")
+
+        # Live fallback toggle
+        st.session_state.enable_live_fallback = st.checkbox(
+            "Live-Suche in älteren Fällen",
+            value=st.session_state.get("enable_live_fallback", True),
+            help="Wenn aktiviert, wird bei unzureichenden lokalen Ergebnissen "
+                 "eine Live-Suche in der gesamten EUR-Lex-Datenbank durchgeführt."
+        )
+
+        st.divider()
 
         # Clear conversation
         if st.button("Gespräch zurücksetzen"):
@@ -149,6 +278,11 @@ def main():
         **Datenquellen:**
         - EUR-Lex (CELLAR)
         - CURIA
+
+        **Features:**
+        - Automatische Updates neuer Entscheidungen
+        - Live-Fallback für ältere Fälle
+        - Mehrsprachige Unterstützung (DE/EN/FR)
 
         **Hinweis:** Dies ist kein Ersatz für
         professionelle Rechtsberatung.
@@ -183,6 +317,9 @@ def main():
         # Generate response
         with st.chat_message("assistant"):
             if chatbot:
+                # Get live fallback setting
+                enable_live_fallback = st.session_state.get("enable_live_fallback", True)
+
                 with st.spinner("Suche relevante Entscheidungen..."):
                     response_placeholder = st.empty()
                     full_response = ""
@@ -193,10 +330,21 @@ def main():
                         full_response += token
                         response_placeholder.markdown(full_response + "...")
 
-                    result = chatbot.answer_stream(prompt, on_token=on_token)
+                    result = chatbot.answer_stream(
+                        prompt,
+                        on_token=on_token,
+                        enable_live_fallback=enable_live_fallback
+                    )
 
                     # Display final response
                     response_placeholder.markdown(result["answer"])
+
+                    # Show info if live fallback was used
+                    if result.get("used_live_fallback"):
+                        st.info(
+                            "Hinweis: Für diese Antwort wurden auch ältere Entscheidungen "
+                            "live von EUR-Lex abgerufen, die nicht im lokalen Index waren."
+                        )
 
                     # Display sources
                     if result.get("sources"):
