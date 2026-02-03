@@ -138,6 +138,22 @@ EuGH-Entscheidungen können über folgende URL-Muster verlinkt werden:
 4. [x] Embedding-Pipeline mit ChromaDB (embeddings.py)
 5. [x] RAG-Prototyp mit Claude (rag_pipeline.py)
 6. [x] Streamlit Frontend (app.py)
+7. [x] Mehrsprachige Unterstützung (DE → EN → FR Fallback)
+
+## Mehrsprachige Unterstützung
+
+Aktuelle Entscheidungen sind oft noch nicht auf Deutsch verfügbar. Das System unterstützt daher:
+
+- **Sprach-Fallback**: DE → EN → FR (in dieser Reihenfolge)
+- **Sprach-Kennzeichnung**: Jedes Dokument speichert seine Sprache
+- **LLM-Hinweis**: Der Chatbot informiert, wenn Quellen nicht auf Deutsch sind
+- **URL-Anpassung**: EUR-Lex und CURIA Links führen zur korrekten Sprachversion
+
+Beispiel-Output:
+```
+Rs. C-XXX/23 (Englisch)
+[EUR-Lex](https://eur-lex.europa.eu/legal-content/EN/TXT/?uri=CELEX:...)
+```
 
 ## Offene Erweiterungen
 

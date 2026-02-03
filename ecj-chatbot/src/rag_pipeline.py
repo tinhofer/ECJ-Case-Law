@@ -18,6 +18,13 @@ from embeddings import CaseLawVectorStore
 load_dotenv()
 
 
+# Language display names
+LANGUAGE_DISPLAY = {
+    "DE": "Deutsch",
+    "EN": "Englisch",
+    "FR": "Französisch"
+}
+
 # System prompt for the EuGH chatbot
 SYSTEM_PROMPT = """Du bist ein juristischer Assistent, der Fragen ausschließlich auf Grundlage der Rechtsprechung des Europäischen Gerichtshofs (EuGH) beantwortet.
 
@@ -29,10 +36,17 @@ WICHTIGE REGELN:
 5. Wenn du dir unsicher bist, sage das
 6. Erfinde KEINE Rechtsprechung oder Urteile
 
+MEHRSPRACHIGE QUELLEN:
+- Manche Entscheidungen sind nur auf Englisch oder Französisch verfügbar (noch keine deutsche Übersetzung)
+- Dies betrifft besonders aktuelle Entscheidungen
+- Wenn eine Quelle nicht auf Deutsch ist, erwähne dies kurz: "(Quelle auf Englisch/Französisch)"
+- Die Sprache der Quelle ist in den Metadaten angegeben
+
 FORMAT DER QUELLENANGABEN:
 - Nenne die Rechtssache (z.B. "Rs. C-311/18 Schrems II")
 - Verlinke zu EUR-Lex: [CELEX-Nummer](URL)
 - Gib das Datum des Urteils an
+- Bei nicht-deutschen Quellen: Sprache in Klammern angeben
 
 Antworte auf Deutsch, es sei denn, der Nutzer fragt auf einer anderen Sprache."""
 
@@ -60,6 +74,13 @@ def format_context(search_results: list[dict]) -> str:
         case_number = metadata.get('case_number', '')
         eurlex_url = metadata.get('eurlex_url', '')
         document_type = metadata.get('document_type', 'Urteil')
+        language = metadata.get('language', 'DE')
+        language_display = LANGUAGE_DISPLAY.get(language, language)
+
+        # Add language note if not German
+        language_note = ""
+        if language != "DE":
+            language_note = f" [Quelle auf {language_display}]"
 
         info = f"""
 {header}
@@ -67,6 +88,7 @@ CELEX: {celex}
 Rechtssache: {case_number}
 Typ: {document_type}
 Datum: {date}
+Sprache: {language_display}{language_note}
 Titel: {title}
 EUR-Lex: {eurlex_url}
 
@@ -197,13 +219,16 @@ Beantworte die Frage basierend auf den obigen Dokumenten. Zitiere die relevanten
         sources = []
         for result in search_results:
             metadata = result.get('metadata', {})
+            language = metadata.get('language', 'DE')
             sources.append({
                 "celex": metadata.get('celex'),
                 "case_number": metadata.get('case_number'),
                 "title": metadata.get('title'),
                 "date": metadata.get('date'),
                 "eurlex_url": metadata.get('eurlex_url'),
-                "curia_url": metadata.get('curia_url')
+                "curia_url": metadata.get('curia_url'),
+                "language": language,
+                "language_display": LANGUAGE_DISPLAY.get(language, language)
             })
 
         return {
@@ -285,11 +310,14 @@ Beantworte die Frage basierend auf den obigen Dokumenten. Zitiere die relevanten
         sources = []
         for result in search_results:
             metadata = result.get('metadata', {})
+            language = metadata.get('language', 'DE')
             sources.append({
                 "celex": metadata.get('celex'),
                 "case_number": metadata.get('case_number'),
                 "title": metadata.get('title'),
-                "eurlex_url": metadata.get('eurlex_url')
+                "eurlex_url": metadata.get('eurlex_url'),
+                "language": language,
+                "language_display": LANGUAGE_DISPLAY.get(language, language)
             })
 
         return {

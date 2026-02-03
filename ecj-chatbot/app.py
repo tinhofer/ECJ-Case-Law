@@ -65,8 +65,15 @@ def display_sources(sources: list[dict]):
             title = source.get('title', 'Kein Titel')
             eurlex_url = source.get('eurlex_url', '')
             curia_url = source.get('curia_url', '')
+            language = source.get('language', 'DE')
+            language_display = source.get('language_display', 'Deutsch')
 
-            st.markdown(f"**{case_number or celex}**")
+            # Show case number with language indicator if not German
+            header = case_number or celex
+            if language != "DE":
+                header += f" ({language_display})"
+
+            st.markdown(f"**{header}**")
 
             if title:
                 st.markdown(f"*{title[:200]}{'...' if len(title) > 200 else ''}*")

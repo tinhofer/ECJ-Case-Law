@@ -24,6 +24,17 @@ EURLEX_URL_TEMPLATE = "https://eur-lex.europa.eu/legal-content/DE/TXT/?uri=CELEX
 CURIA_URL_TEMPLATE = "https://curia.europa.eu/juris/liste.jsf?num={case_number}&language=de"
 
 
+# Language fallback order: German preferred, then English, then French
+LANGUAGE_FALLBACK = ["DE", "EN", "FR"]
+
+# Language names for display
+LANGUAGE_NAMES = {
+    "DE": "Deutsch",
+    "EN": "English",
+    "FR": "Français"
+}
+
+
 @dataclass
 class CaseLawDocument:
     """Represents an EuGH case law document."""
@@ -38,9 +49,15 @@ class CaseLawDocument:
     curia_url: str | None
     ecli: str | None
     keywords: list[str]
+    language: str = "DE"  # Language of the document text
 
     def to_dict(self) -> dict:
         return asdict(self)
+
+    @property
+    def language_name(self) -> str:
+        """Get the full language name."""
+        return LANGUAGE_NAMES.get(self.language, self.language)
 
 
 def get_case_law_metadata(
@@ -150,7 +167,7 @@ def get_case_law_metadata(
 
 def fetch_document_text(celex: str, language: str = "DE") -> str | None:
     """
-    Fetch the full text of a document from EUR-Lex.
+    Fetch the full text of a document from EUR-Lex in a specific language.
 
     Args:
         celex: CELEX number of the document
@@ -167,9 +184,25 @@ def fetch_document_text(celex: str, language: str = "DE") -> str | None:
         response = requests.get(url, timeout=30)
         response.raise_for_status()
 
+        # Check if we got a valid document (not a "not available" page)
+        if response.status_code == 404:
+            return None
+
         # Parse HTML and extract text
         from bs4 import BeautifulSoup
         soup = BeautifulSoup(response.content, 'lxml')
+
+        # Check for "document not available" indicators
+        page_text = soup.get_text()
+        not_available_indicators = [
+            "is not available in",
+            "n'est pas disponible en",
+            "ist nicht verfügbar in",
+            "Document does not exist",
+            "Dokument existiert nicht"
+        ]
+        if any(indicator in page_text for indicator in not_available_indicators):
+            return None
 
         # Remove scripts and styles
         for element in soup(['script', 'style', 'nav', 'header', 'footer']):
@@ -178,40 +211,77 @@ def fetch_document_text(celex: str, language: str = "DE") -> str | None:
         # Get text content
         text = soup.get_text(separator='\n', strip=True)
 
+        # Check if we got meaningful content (not just headers/navigation)
+        if len(text) < 500:
+            return None
+
         return text
 
     except Exception as e:
-        print(f"Failed to fetch document {celex}: {e}")
+        print(f"Failed to fetch document {celex} in {language}: {e}")
         return None
+
+
+def fetch_document_text_with_fallback(
+    celex: str,
+    languages: list[str] | None = None
+) -> tuple[str | None, str]:
+    """
+    Fetch document text, trying multiple languages in order.
+
+    Args:
+        celex: CELEX number of the document
+        languages: List of language codes to try (default: DE, EN, FR)
+
+    Returns:
+        Tuple of (text, language_code) or (None, "") if not available in any language
+    """
+
+    if languages is None:
+        languages = LANGUAGE_FALLBACK
+
+    for lang in languages:
+        text = fetch_document_text(celex, lang)
+        if text:
+            if lang != "DE":
+                print(f"  Document {celex} fetched in {LANGUAGE_NAMES.get(lang, lang)} (not available in German)")
+            return text, lang
+
+    return None, ""
 
 
 def create_case_document(metadata: dict) -> CaseLawDocument | None:
     """
     Create a full CaseLawDocument from metadata by fetching the text.
 
+    Tries to fetch the document in German first, then English, then French.
+    This ensures that recent decisions not yet translated to German are still included.
+
     Args:
         metadata: Case metadata dictionary
 
     Returns:
-        CaseLawDocument or None if text couldn't be fetched
+        CaseLawDocument or None if text couldn't be fetched in any language
     """
 
     celex = metadata.get("celex", "")
     if not celex:
         return None
 
-    # Fetch document text
-    text = fetch_document_text(celex)
+    # Fetch document text with language fallback
+    text, language = fetch_document_text_with_fallback(celex)
     if not text:
         return None
 
-    # Build URLs
-    eurlex_url = EURLEX_URL_TEMPLATE.format(celex=celex)
+    # Build URLs - use the language the document was fetched in
+    eurlex_url = f"https://eur-lex.europa.eu/legal-content/{language}/TXT/?uri=CELEX:{celex}"
 
     case_number = metadata.get("case_number")
     curia_url = None
     if case_number:
-        curia_url = CURIA_URL_TEMPLATE.format(case_number=case_number)
+        # CURIA supports language parameter
+        curia_lang = language.lower()
+        curia_url = f"https://curia.europa.eu/juris/liste.jsf?num={case_number}&language={curia_lang}"
 
     return CaseLawDocument(
         celex=celex,
@@ -224,7 +294,8 @@ def create_case_document(metadata: dict) -> CaseLawDocument | None:
         eurlex_url=eurlex_url,
         curia_url=curia_url,
         ecli=metadata.get("ecli"),
-        keywords=[]
+        keywords=[],
+        language=language
     )
 
 

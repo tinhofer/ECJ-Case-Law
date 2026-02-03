@@ -141,6 +141,7 @@ class CaseLawVectorStore:
                 "eurlex_url": doc.eurlex_url,
                 "curia_url": doc.curia_url or "",
                 "ecli": doc.ecli or "",
+                "language": getattr(doc, 'language', 'DE'),  # Document language
                 "chunk_index": i,
                 "total_chunks": len(chunks)
             })
