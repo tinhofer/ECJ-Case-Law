@@ -1,0 +1,10 @@
+# Code Owners
+# These owners will be requested for review when someone opens a PR
+
+# Default owners for everything
+* @tinhofer
+
+# Example: specific paths can have different owners
+# /docs/ @docs-team
+# /src/api/ @backend-team
+# /src/ui/ @frontend-team

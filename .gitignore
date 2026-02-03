@@ -1,0 +1,107 @@
+# Dependencies
+node_modules/
+vendor/
+.pnp
+.pnp.js
+
+# Build outputs
+dist/
+build/
+out/
+target/
+*.egg-info/
+*.egg
+*.whl
+*.so
+*.dylib
+*.dll
+
+# IDE and editors
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.project
+.classpath
+.settings/
+*.sublime-workspace
+*.sublime-project
+
+# OS files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+desktop.ini
+
+# Environment and secrets
+.env
+.env.local
+.env.*.local
+.env.development
+.env.test
+.env.production
+*.pem
+*.key
+secrets.json
+credentials.json
+
+# Logs
+logs/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+lerna-debug.log*
+
+# Testing
+coverage/
+.coverage
+htmlcov/
+.pytest_cache/
+.nyc_output/
+*.lcov
+
+# Cache
+.cache/
+.parcel-cache/
+.next/
+.nuxt/
+.turbo/
+__pycache__/
+*.py[cod]
+*$py.class
+.sass-cache/
+
+# Package manager locks (uncomment if needed)
+# package-lock.json
+# yarn.lock
+# pnpm-lock.yaml
+
+# Temporary files
+tmp/
+temp/
+*.tmp
+*.temp
+*.bak
+*.backup
+
+# Debug
+.debug/
+*.dmp
+
+# Documentation build
+docs/_build/
+site/
+
+# Misc
+*.pid
+*.seed
+*.pid.lock
+.eslintcache
+.node_repl_history
+*.tsbuildinfo
