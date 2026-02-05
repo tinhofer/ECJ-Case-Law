@@ -202,6 +202,34 @@ Rs. C-XXX/23 (Englisch)
    - Toggle für Live-Fallback
    - Anzeige wenn Fallback verwendet wurde
 
+## Cloud-Speicher Unterstützung
+
+Konfigurierbare Datenpfade ermöglichen Speicherung in Cloud-Ordnern (OneDrive, Google Drive, Dropbox).
+
+### Konfiguration (`src/config.py`)
+
+```python
+# Umgebungsvariable setzen:
+ECJ_DATA_DIR=/Users/name/OneDrive/EuGH-Data
+
+# Oder programmatisch:
+from config import set_data_dir
+set_data_dir("/path/to/cloud/folder")
+```
+
+### Multi-Device Workflow
+
+1. **Gerät A**: Lädt Daten herunter → Daten werden zu Cloud synchronisiert
+2. **Gerät B**: Startet App → Findet Daten ohne Index → Erstellt Index automatisch
+3. **Beide Geräte**: Können unabhängig arbeiten
+
+### Design-Entscheidungen
+
+- **Nur JSON-Daten werden synchronisiert** (nicht der Index)
+- **Index wird lokal erstellt** (ChromaDB ist nicht sync-safe)
+- **Auto-Index**: Wenn Daten vorhanden aber Index fehlt → automatische Erstellung
+- **Cloud-Erkennung**: App zeigt an, wenn Cloud-Speicher verwendet wird
+
 ## Offene Erweiterungen
 
 - [ ] Caching für API-Anfragen implementieren
@@ -211,3 +239,4 @@ Rs. C-XXX/23 (Englisch)
 - [ ] Docker-Container
 - [x] Automatische Updates neuer Entscheidungen
 - [x] Live-Fallback für ältere Fälle
+- [x] Cloud-Speicher Unterstützung (konfigurierbare Pfade)

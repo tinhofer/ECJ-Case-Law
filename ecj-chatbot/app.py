@@ -15,6 +15,7 @@ import streamlit as st
 import sys
 sys.path.insert(0, str(Path(__file__).parent / "src"))
 
+from config import get_config, set_data_dir, Config
 from rag_pipeline import create_chatbot, EuGHChatbot
 from embeddings import CaseLawVectorStore, build_index_from_data_dir
 from data_acquisition import (
@@ -24,73 +25,80 @@ from data_acquisition import (
 )
 
 
-# Configuration
-DATA_DIR = Path(__file__).parent / "data" / "cases"
-INDEX_DIR = Path(__file__).parent / "data" / "index"
+# Get configuration
+config = get_config()
 
 
-def initialize_data_and_index(
-    auto_update: bool = True,
-    initial_year: int = 2020
-) -> bool:
+def initialize_data_and_index(auto_update: bool = True) -> bool:
     """
     Initialize or update the case law data and search index.
 
-    This function:
-    1. Checks if data exists, if not performs initial download
-    2. If auto_update is True, checks for and downloads new cases
-    3. Rebuilds the index if new data was added
+    Uses paths from global config. If data exists in cloud folder but no local
+    index, automatically builds the index.
 
     Args:
         auto_update: Whether to check for new cases on startup
-        initial_year: Year from which to download cases initially
 
     Returns:
         True if initialization was successful
     """
-    DATA_DIR.mkdir(parents=True, exist_ok=True)
-    INDEX_DIR.mkdir(parents=True, exist_ok=True)
+    config.ensure_directories()
+
+    cases_dir = config.cases_dir
+    index_dir = config.index_dir
 
     # Check if we have any data
-    existing_cases = list(DATA_DIR.glob("*.json"))
+    existing_cases = list(cases_dir.glob("*.json"))
     has_data = len(existing_cases) > 0
 
+    # Check if index exists
+    index_exists = index_dir.exists() and any(index_dir.iterdir())
+
+    # Case 1: Data exists but no index (e.g., synced from cloud on new device)
+    if has_data and not index_exists:
+        st.info(f"Daten gefunden ({len(existing_cases)} Entscheidungen), aber kein Index. Erstelle Index...")
+        with st.spinner("Indiziere Dokumente..."):
+            build_index_from_data_dir(cases_dir, index_dir)
+        st.success("Index erstellt!")
+        return True
+
+    # Case 2: No data - initial download
     if not has_data:
-        # Initial download
+        initial_year = config.initial_year
         st.info(f"Erste Initialisierung: Lade EuGH-Entscheidungen seit {initial_year}...")
         with st.spinner("Lade Daten von EUR-Lex..."):
             downloaded = download_case_law_batch(
-                output_dir=DATA_DIR,
-                limit=500,  # Initial batch
+                output_dir=cases_dir,
+                limit=config.initial_limit,
                 year_from=initial_year,
-                delay_seconds=1.0
+                delay_seconds=config.download_delay
             )
             st.success(f"{downloaded} Entscheidungen heruntergeladen.")
 
         # Build initial index
         st.info("Erstelle Suchindex...")
         with st.spinner("Indiziere Dokumente..."):
-            build_index_from_data_dir(DATA_DIR, INDEX_DIR)
+            build_index_from_data_dir(cases_dir, index_dir)
             st.success("Index erstellt.")
 
         return True
 
-    elif auto_update:
-        # Check for updates
-        checkpoint = load_checkpoint(DATA_DIR)
+    # Case 3: Data and index exist - check for updates
+    if auto_update:
+        checkpoint = load_checkpoint(cases_dir)
         last_update = checkpoint.get("last_download_date", "Nie")
 
         with st.spinner(f"Prüfe auf neue Entscheidungen (letztes Update: {last_update[:10] if last_update != 'Nie' else last_update})..."):
             new_cases = incremental_update(
-                data_dir=DATA_DIR,
-                delay_seconds=1.0,
-                max_new_cases=100
+                data_dir=cases_dir,
+                delay_seconds=config.download_delay,
+                max_new_cases=config.update_limit
             )
 
         if new_cases > 0:
             st.info(f"{new_cases} neue Entscheidungen gefunden. Aktualisiere Index...")
             with st.spinner("Aktualisiere Suchindex..."):
-                build_index_from_data_dir(DATA_DIR, INDEX_DIR)
+                build_index_from_data_dir(cases_dir, index_dir)
             st.success("Index aktualisiert.")
 
     return True
@@ -112,22 +120,24 @@ def init_chatbot(auto_update: bool = False) -> EuGHChatbot | None:
         )
         return None
 
+    index_dir = config.index_dir
+
     # Initialize data and index if needed (only on first run)
     if "initialized" not in st.session_state:
-        if not INDEX_DIR.exists() or not any(INDEX_DIR.iterdir()):
+        if not index_dir.exists() or not any(index_dir.iterdir()):
             initialize_data_and_index(auto_update=auto_update)
         st.session_state.initialized = True
 
     if "chatbot" not in st.session_state:
-        if not INDEX_DIR.exists():
+        if not index_dir.exists():
             st.error(
-                f"Index-Verzeichnis nicht gefunden: {INDEX_DIR}\n\n"
+                f"Index-Verzeichnis nicht gefunden: {index_dir}\n\n"
                 "Bitte führen Sie zuerst die Datenakquise und Indizierung durch."
             )
             return None
 
         try:
-            st.session_state.chatbot = create_chatbot(INDEX_DIR, api_key)
+            st.session_state.chatbot = create_chatbot(index_dir, api_key)
         except Exception as e:
             st.error(f"Fehler beim Initialisieren des Chatbots: {e}")
             return None
@@ -203,13 +213,20 @@ def main():
         # Index & Data stats
         st.header("Datenbank-Status")
 
-        # Count local cases
-        case_count = len(list(DATA_DIR.glob("*.json"))) if DATA_DIR.exists() else 0
-        st.metric("Lokale Entscheidungen", case_count)
+        # Get status from config
+        status = config.get_status()
 
-        if INDEX_DIR.exists():
+        # Show storage location
+        if config.is_cloud_storage():
+            st.success("Cloud-Speicher erkannt")
+        st.caption(f"Speicherort: {status['data_dir']}")
+
+        # Count local cases
+        st.metric("Lokale Entscheidungen", status['cases_count'])
+
+        if status['index_exists']:
             try:
-                store = CaseLawVectorStore(persist_directory=INDEX_DIR)
+                store = CaseLawVectorStore(persist_directory=config.index_dir)
                 stats = store.get_collection_stats()
                 st.metric("Indizierte Textabschnitte", stats.get('total_chunks', 0))
             except Exception:
@@ -218,8 +235,8 @@ def main():
             st.warning("Kein Index vorhanden")
 
         # Show last update time
-        if DATA_DIR.exists():
-            checkpoint = load_checkpoint(DATA_DIR)
+        if config.cases_dir.exists():
+            checkpoint = load_checkpoint(config.cases_dir)
             last_update = checkpoint.get("last_download_date")
             if last_update:
                 st.caption(f"Letztes Update: {last_update[:10]}")
@@ -231,15 +248,15 @@ def main():
         if st.button("Neue Entscheidungen laden", help="Prüft EUR-Lex auf neue Entscheidungen"):
             with st.spinner("Suche neue Entscheidungen..."):
                 new_cases = incremental_update(
-                    data_dir=DATA_DIR,
-                    delay_seconds=1.0,
-                    max_new_cases=50
+                    data_dir=config.cases_dir,
+                    delay_seconds=config.download_delay,
+                    max_new_cases=config.update_limit
                 )
             if new_cases > 0:
                 st.success(f"{new_cases} neue Entscheidungen geladen!")
                 # Rebuild index
                 with st.spinner("Aktualisiere Suchindex..."):
-                    build_index_from_data_dir(DATA_DIR, INDEX_DIR)
+                    build_index_from_data_dir(config.cases_dir, config.index_dir)
                 st.success("Index aktualisiert!")
                 # Clear chatbot to reload index
                 if "chatbot" in st.session_state:
@@ -251,7 +268,7 @@ def main():
         # Live fallback toggle
         st.session_state.enable_live_fallback = st.checkbox(
             "Live-Suche in älteren Fällen",
-            value=st.session_state.get("enable_live_fallback", True),
+            value=st.session_state.get("enable_live_fallback", config.enable_live_fallback),
             help="Wenn aktiviert, wird bei unzureichenden lokalen Ergebnissen "
                  "eine Live-Suche in der gesamten EUR-Lex-Datenbank durchgeführt."
         )

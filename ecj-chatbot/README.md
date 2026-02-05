@@ -69,41 +69,81 @@ cp .env.example .env
 
 ## Verwendung
 
-### 1. Daten herunterladen
+### Schnellstart
 
-Laden Sie zuerst EuGH-Entscheidungen von EUR-Lex herunter:
+```bash
+# 1. Umgebung einrichten
+cp .env.example .env
+# API-Key in .env eintragen
+
+# 2. Chatbot starten - alles andere passiert automatisch!
+streamlit run app.py
+```
+
+Beim ersten Start werden automatisch:
+- EuGH-Entscheidungen seit 2020 heruntergeladen (~500 Fälle)
+- Der Suchindex erstellt
+- Bei weiteren Starts nur neue Fälle nachgeladen
+
+### Manueller Workflow (optional)
+
+Falls Sie mehr Kontrolle wünschen:
 
 ```bash
 cd src
+
+# Daten herunterladen
 python data_acquisition.py
-```
 
-Dies lädt standardmäßig 50 aktuelle Entscheidungen. Für mehr Daten bearbeiten Sie die Parameter in der `__main__`-Sektion.
-
-### 2. Index erstellen
-
-Erstellen Sie den Vektor-Index für die semantische Suche:
-
-```bash
+# Index erstellen
 python embeddings.py
-```
 
-### 3. Chatbot starten
-
-#### Option A: Kommandozeile
-
-```bash
-python rag_pipeline.py
-```
-
-#### Option B: Web-Interface (Streamlit)
-
-```bash
+# Chatbot starten
 cd ..
 streamlit run app.py
 ```
 
-Der Chatbot ist dann unter `http://localhost:8501` erreichbar.
+## Cloud-Speicher (Multi-Device)
+
+Sie können die Daten in einem Cloud-Ordner speichern, um von mehreren Geräten darauf zuzugreifen.
+
+### Einrichtung
+
+1. Erstellen Sie einen Ordner in Ihrem Cloud-Speicher:
+   - OneDrive: `OneDrive/EuGH-Data`
+   - Google Drive: `Google Drive/EuGH-Data`
+   - Dropbox: `Dropbox/EuGH-Data`
+
+2. Setzen Sie die Umgebungsvariable in `.env`:
+   ```bash
+   # Windows
+   ECJ_DATA_DIR=C:\Users\IhrName\OneDrive\EuGH-Data
+
+   # macOS/Linux
+   ECJ_DATA_DIR=/Users/IhrName/OneDrive/EuGH-Data
+   ```
+
+3. Starten Sie den Chatbot - er verwendet automatisch den Cloud-Ordner
+
+### Wie es funktioniert
+
+```
+Gerät A (Ersteinrichtung)         Cloud (OneDrive/GDrive)
+┌─────────────────────┐           ┌─────────────────────┐
+│ 1. Download Fälle   │ ────────> │  cases/*.json       │
+│ 2. Erstelle Index   │           │  (synchronisiert)   │
+└─────────────────────┘           └─────────────────────┘
+                                            │
+                                            ▼
+Gerät B (neue Installation)       ┌─────────────────────┐
+┌─────────────────────┐           │  cases/*.json       │
+│ 1. Daten vorhanden  │ <──────── │  (synchronisiert)   │
+│ 2. Index fehlt      │           └─────────────────────┘
+│ 3. Auto-Index! ✓    │
+└─────────────────────┘
+```
+
+**Wichtig:** Der Index wird lokal erstellt (nicht synchronisiert), da ChromaDB-Dateien bei gleichzeitigem Zugriff korrupt werden können. Der Index wird automatisch erstellt, wenn Daten vorhanden sind aber kein Index existiert.
 
 ## Projektstruktur
 
@@ -111,12 +151,13 @@ Der Chatbot ist dann unter `http://localhost:8501` erreichbar.
 ecj-chatbot/
 ├── src/
 │   ├── __init__.py
+│   ├── config.py             # Konfiguration (Pfade, Einstellungen)
 │   ├── data_acquisition.py   # EUR-Lex SPARQL-Abfragen
 │   ├── embeddings.py         # Vektorisierung mit ChromaDB
 │   └── rag_pipeline.py       # RAG-Logik und Claude-Integration
-├── data/
+├── data/                     # Standard-Speicherort (oder Cloud-Ordner)
 │   ├── cases/                # Heruntergeladene Entscheidungen (JSON)
-│   └── index/                # ChromaDB Vektor-Index
+│   └── index/                # ChromaDB Vektor-Index (lokal)
 ├── app.py                    # Streamlit Web-Interface
 ├── requirements.txt          # Python-Abhängigkeiten
 ├── .env.example              # Beispiel-Umgebungsvariablen
