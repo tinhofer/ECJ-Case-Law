@@ -8,43 +8,31 @@ Entwicklung eines RAG-basierten Chatbots, der Fragen **ausschließlich** auf Gru
 
 ## Aktueller Stand
 
-**Branch:** `claude/eu-court-chatbot-r1gjM`
+**Merged PR:** #1 (`claude/eu-court-chatbot-r1gjM` → `main`)
 
-**Commits:**
-1. ✅ `feat: Add EuGH case law chatbot with RAG architecture`
-2. ✅ `feat: Add multilingual support with DE/EN/FR fallback`
-3. ✅ `feat: Add incremental updates and live fallback search`
-4. ✅ `feat: Add configurable data paths for cloud storage support`
+**Status:** Feature-komplett (v0.1.0). Tests und CI hinzugefügt.
 
-**Status:** Feature-komplett, bereit für Tests und PR
+### Was ist fertig
+- Full RAG pipeline with EUR-Lex SPARQL data acquisition
+- Multilingual support (DE → EN → FR fallback)
+- Incremental updates with checkpoint system
+- Live fallback search for older/unindexed cases
+- Cloud storage support (OneDrive, Google Drive, Dropbox)
+- Streamlit web interface with streaming responses
+- **75 pytest tests** covering all 4 core modules
+- **CI pipeline** (GitHub Actions, Python 3.11/3.12 matrix)
+- **Project README** with quick start, architecture, config reference
+
+### What was done in the last session
+- Added `ecj-chatbot/tests/` with 4 test files + conftest.py (75 tests, all passing)
+- Heavy deps (chromadb, sentence-transformers) are mocked via `sys.modules` in conftest.py so tests run without ML packages
+- Replaced Node.js CI template with Python workflow in `.github/workflows/ci.yml`
+- Rewrote top-level `README.md` from generic scaffold to project-specific content
 
 ## Architektur
 
 ```
-┌─────────────────────────────────────────────────────────────────────────────┐
-│                              EuGH CHATBOT                                   │
-├─────────────────────────────────────────────────────────────────────────────┤
-│                                                                             │
-│  DATENQUELLEN                    VERARBEITUNG              AUSGABE          │
-│  ┌───────────────┐              ┌──────────────┐         ┌──────────────┐  │
-│  │ EUR-Lex       │──SPARQL───>  │ ChromaDB     │──RAG──> │ Claude API   │  │
-│  │ (CELLAR)      │              │ (Vektor-DB)  │         │ (Anthropic)  │  │
-│  └───────────────┘              └──────────────┘         └──────────────┘  │
-│         │                              │                        │          │
-│         │                              │                        ▼          │
-│         │                              │                 ┌──────────────┐  │
-│         └──────Live-Fallback──────────>│                 │ Antwort +    │  │
-│           (für ältere Fälle)           │                 │ Quellenlinks │  │
-│                                        │                 └──────────────┘  │
-│                                        │                                   │
-│  SPEICHERUNG                           │                                   │
-│  ┌───────────────┐                     │                                   │
-│  │ Cloud-Ordner  │<────sync────────────┘                                   │
-│  │ (OneDrive/    │     (nur JSON,                                          │
-│  │  GDrive)      │      nicht Index)                                       │
-│  └───────────────┘                                                         │
-│                                                                             │
-└─────────────────────────────────────────────────────────────────────────────┘
+EUR-Lex SPARQL → JSON docs → sentence-transformers embeddings → ChromaDB → RAG context → Claude → sourced answer
 ```
 
 ## Projektstruktur
@@ -57,6 +45,13 @@ ecj-chatbot/
 │   ├── data_acquisition.py   # EUR-Lex SPARQL-Abfragen, Download, Live-Suche
 │   ├── embeddings.py         # ChromaDB Vektorisierung
 │   └── rag_pipeline.py       # RAG-Logik, Claude-Integration
+├── tests/
+│   ├── __init__.py
+│   ├── conftest.py           # Shared fixtures, sys.modules mocking
+│   ├── test_config.py        # 19 tests
+│   ├── test_data_acquisition.py  # 22 tests
+│   ├── test_embeddings.py    # 14 tests
+│   └── test_rag_pipeline.py  # 20 tests
 ├── data/                     # Standard-Speicherort (oder via ECJ_DATA_DIR)
 │   ├── cases/                # JSON-Dateien der Entscheidungen
 │   └── index/                # ChromaDB Vektor-Index (lokal)
@@ -64,35 +59,18 @@ ecj-chatbot/
 ├── requirements.txt          # Python-Abhängigkeiten
 ├── .env.example              # Umgebungsvariablen-Vorlage
 ├── notes.md                  # Entwicklungsnotizen
-└── README.md                 # Benutzer-Dokumentation
+└── README.md                 # Benutzer-Dokumentation (Deutsch)
 ```
 
-## Implementierte Features
+## Running Tests
 
-### 1. RAG-basierter Chatbot
-- Semantische Suche über EuGH-Entscheidungen
-- Claude API für Antwortgenerierung
-- Quellenangaben mit EUR-Lex und CURIA Links
+```bash
+cd ecj-chatbot
+pip install pytest pytest-cov
+python -m pytest tests/ -v
+```
 
-### 2. Mehrsprachige Unterstützung
-- Sprach-Fallback: DE → EN → FR
-- Aktuelle Entscheidungen oft nur auf EN/FR verfügbar
-- Sprache wird in Metadaten gespeichert und in UI angezeigt
-
-### 3. Inkrementelle Updates
-- Checkpoint-System speichert letztes Download-Datum
-- Bei App-Start nur neue Fälle nachladen
-- Manueller Update-Button in UI
-
-### 4. Live-Fallback-Suche
-- Wenn lokaler Index keine relevanten Ergebnisse hat
-- SPARQL-Suche in gesamter EUR-Lex-Datenbank
-- On-Demand Download gefundener Fälle
-
-### 5. Cloud-Speicher
-- Konfigurierbarer Datenpfad via `ECJ_DATA_DIR`
-- Auto-Index-Erstellung wenn Daten vorhanden aber Index fehlt
-- Nur JSON-Daten werden synchronisiert (nicht Index)
+All 75 tests pass in ~1.7s. Tests mock all external services (SPARQL, Claude API, ChromaDB).
 
 ## Wichtige Dateien
 
@@ -118,26 +96,17 @@ Zentrale Konfiguration mit Umgebungsvariablen:
 - Auto-Initialisierung beim ersten Start
 - Sidebar mit Status, Update-Button, Einstellungen
 
-## Offene Punkte / Nächste Schritte
+## Empfohlene nächste Schritte (nach Priorität)
 
-### Zum Testen
-1. `pip install -r requirements.txt`
-2. `.env` mit `ANTHROPIC_API_KEY` erstellen
-3. `streamlit run app.py`
-4. Erster Start lädt ~500 Fälle (dauert ~10-15 Min)
+### Medium Priority
+1. **Add linting/formatting** — Set up `ruff` with a `pyproject.toml`
+2. **Add type hints** — More thorough annotations in core modules
+3. **Dockerize** — `Dockerfile` for easier deployment
 
-### Mögliche Erweiterungen
-- [ ] Filterung nach Rechtsgebiet/Gericht
-- [ ] Caching für API-Anfragen
-- [ ] FastAPI REST-Endpunkt
-- [ ] Docker-Container
-- [ ] Agentic RAG für komplexe Anfragen
-
-### PR erstellen
-Wenn Tests erfolgreich, PR mit:
-```bash
-gh pr create --title "feat: EuGH Case Law Chatbot" --body "..."
-```
+### Lower Priority
+4. **Better error handling** — Retry logic for EUR-Lex/CURIA network failures
+5. **FastAPI endpoint** — REST API (deps already in requirements.txt, no server code yet)
+6. **Expand language coverage** — More EU languages beyond DE/EN/FR
 
 ## Technische Details
 
@@ -151,22 +120,12 @@ gh pr create --title "feat: EuGH Case Law Chatbot" --body "..."
 
 ### Embedding-Modell
 - Default: `sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2`
-- Multilingual für DE/EN/FR Support
 
 ### LLM
-- Claude API (Anthropic)
-- Default-Modell: `claude-sonnet-4-20250514`
+- Claude API (Anthropic), default: `claude-sonnet-4-20250514`
 
 ## Bekannte Einschränkungen
 
 1. **ChromaDB nicht sync-safe**: Index muss lokal erstellt werden
 2. **EUR-Lex Rate-Limiting**: Download mit 1s Delay zwischen Requests
 3. **Keine Offline-Suche in alten Fällen**: Live-Fallback benötigt Internet
-
-## Kontext für neue Sessions
-
-Bei Fortsetzung in neuer Session:
-1. Branch `claude/eu-court-chatbot-r1gjM` auschecken
-2. Diese Datei lesen für Kontext
-3. `notes.md` für detaillierte Entwicklungsnotizen
-4. `README.md` für Benutzer-Dokumentation
