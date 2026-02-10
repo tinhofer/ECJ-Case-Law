@@ -1,91 +1,114 @@
-# Claude-Code
+# ECJ Case Law Chatbot
 
-A project scaffolded with best practices for modern development.
+A RAG-based (Retrieval-Augmented Generation) chatbot that answers legal questions exclusively based on European Court of Justice (EuGH/ECJ) case law. All answers are grounded in actual court decisions and linked to their official sources on EUR-Lex and CURIA.
 
-## Getting Started
+## Features
 
-### Prerequisites
+- Answers legal questions based on real ECJ decisions with source citations
+- Links every cited decision to [EUR-Lex](https://eur-lex.europa.eu/) and [CURIA](https://curia.europa.eu/)
+- Multilingual support (DE/EN/FR) with automatic language fallback
+- Semantic search over thousands of ECJ judgments via ChromaDB
+- Live fallback search for older cases not in the local index
+- Incremental updates — only downloads new decisions on subsequent runs
+- Cloud storage support (OneDrive, Google Drive, Dropbox) for multi-device access
+- Streaming responses via Streamlit web interface
 
-- Git
-- Your preferred programming language runtime
-
-### Installation
+## Quick Start
 
 ```bash
-git clone <repository-url>
-cd Claude-Code
+# Clone and enter the project
+git clone https://github.com/tinhofer/ECJ-Case-Law.git
+cd ECJ-Case-Law/ecj-chatbot
+
+# Create a virtual environment
+python -m venv venv
+source venv/bin/activate  # Linux/Mac
+# venv\Scripts\activate   # Windows
+
+# Install dependencies
+pip install -r requirements.txt
+
+# Configure your API key
+cp .env.example .env
+# Edit .env and add your ANTHROPIC_API_KEY
+
+# Launch the chatbot
+streamlit run app.py
 ```
+
+On first launch the app automatically downloads ~500 recent ECJ decisions from EUR-Lex and builds the search index. Subsequent launches only fetch new cases.
+
+## Architecture
+
+```
+User Question
+      │
+      ▼
+┌─────────────┐     ┌──────────────┐     ┌─────────────┐
+│  ChromaDB   │────>│  RAG Pipeline│────>│   Claude     │
+│  Vector     │     │  (retrieval  │     │   (LLM)      │
+│  Search     │     │   + context) │     │              │
+└─────────────┘     └──────────────┘     └──────┬───────┘
+                                                │
+                                         ┌──────▼───────┐
+                                         │   Answer     │
+                                         │   + Sources  │
+                                         └──────────────┘
+```
+
+**Data flow:** EUR-Lex SPARQL → JSON documents → sentence-transformers embeddings → ChromaDB index → RAG context → Claude → sourced answer
 
 ## Project Structure
 
 ```
-Claude-Code/
-├── .github/              # GitHub templates and workflows
-│   ├── ISSUE_TEMPLATE/   # Issue templates
-│   ├── workflows/        # CI/CD workflows
-│   └── PULL_REQUEST_TEMPLATE.md
-├── scripts/              # Utility scripts
-│   └── apply-best-practices.sh  # Apply scaffold to existing projects
-├── src/                  # Source code (create as needed)
-├── tests/                # Test files (create as needed)
-├── docs/                 # Documentation (create as needed)
-├── .editorconfig         # Editor configuration
-├── .gitignore            # Git ignore rules
-├── CHANGELOG.md          # Version history
-├── CONTRIBUTING.md       # Contribution guidelines
-├── LICENSE               # MIT License
-└── README.md             # This file
+ecj-chatbot/
+├── src/
+│   ├── config.py             # Configuration & cloud storage paths
+│   ├── data_acquisition.py   # EUR-Lex SPARQL queries & incremental updates
+│   ├── embeddings.py         # ChromaDB vector store & text chunking
+│   └── rag_pipeline.py       # RAG logic & Claude API integration
+├── tests/                    # Pytest test suite
+├── app.py                    # Streamlit web interface
+├── requirements.txt          # Python dependencies
+└── .env.example              # Environment variable template
 ```
 
-## Usage
-
-### For New Projects
-
-Fork or clone this repository and customize it for your needs:
+## Running Tests
 
 ```bash
-git clone https://github.com/tinhofer/Claude-Code.git my-new-project
-cd my-new-project
-rm -rf .git && git init
-git add . && git commit -m "Add: initial project scaffold"
+cd ecj-chatbot
+pip install pytest pytest-cov
+python -m pytest tests/ -v
 ```
 
-### For Existing Projects
+## Configuration
 
-Use the included script to apply best practices to an existing project:
+Key settings via environment variables (see `.env.example`):
 
-```bash
-# Preview what will be copied (dry run)
-./scripts/apply-best-practices.sh --dry-run /path/to/your-project
+| Variable | Description | Default |
+|----------|-------------|---------|
+| `ANTHROPIC_API_KEY` | Your Anthropic API key | (required) |
+| `ECJ_DATA_DIR` | Data storage path (supports cloud folders) | `./data` |
+| `ECJ_LLM_MODEL` | Claude model to use | `claude-sonnet-4-20250514` |
+| `ECJ_INITIAL_YEAR` | Earliest year to download cases from | `2020` |
+| `ECJ_ENABLE_LIVE_FALLBACK` | Search EUR-Lex live for older cases | `true` |
 
-# Apply the best practices
-./scripts/apply-best-practices.sh /path/to/your-project
-```
+## Tech Stack
 
-The script copies:
-- `.editorconfig` - Code style configuration
-- `.gitignore` - Comprehensive ignore patterns (as template if one exists)
-- `.github/ISSUE_TEMPLATE/` - Bug report and feature request templates
-- `.github/PULL_REQUEST_TEMPLATE.md` - PR checklist
-- `.github/CODEOWNERS` - Code ownership configuration
-- `.github/workflows/ci.yml` - CI/CD pipeline skeleton
-- `CONTRIBUTING.md` - Contribution guidelines
-- `CHANGELOG.md` - Version history template
+- **Python 3.11+** — core language
+- **Anthropic Claude** — LLM for answer generation
+- **ChromaDB** — local vector database
+- **sentence-transformers** — multilingual embeddings (`paraphrase-multilingual-MiniLM-L12-v2`)
+- **Streamlit** — web interface
+- **SPARQLWrapper** — EUR-Lex data acquisition
+- **BeautifulSoup4** — HTML text extraction
 
-After running the script, customize the files for your project's specific needs.
+## Documentation
 
-## Contributing
-
-Please read [CONTRIBUTING.md](CONTRIBUTING.md) for details on our code of conduct and the process for submitting pull requests.
-
-## Changelog
-
-See [CHANGELOG.md](CHANGELOG.md) for a list of changes.
+- [Detailed setup & usage guide](ecj-chatbot/README.md) (German)
+- [Contributing guidelines](CONTRIBUTING.md)
+- [Changelog](CHANGELOG.md)
 
 ## License
 
-This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
-
-## Acknowledgments
-
-- Thanks to all contributors
+MIT License — see [LICENSE](LICENSE) for details.
