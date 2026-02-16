@@ -116,7 +116,8 @@ class EuGHChatbot:
         vector_store: CaseLawVectorStore,
         api_key: str | None = None,
         model: str = "claude-sonnet-4-20250514",
-        n_results: int = 5
+        n_results: int = 5,
+        subject_areas: list[str] | None = None
     ):
         """
         Initialize the chatbot.
@@ -126,11 +127,13 @@ class EuGHChatbot:
             api_key: Anthropic API key (or set ANTHROPIC_API_KEY env var)
             model: Claude model to use
             n_results: Number of documents to retrieve for context
+            subject_areas: Optional EuroVoc descriptor labels to filter live searches
         """
 
         self.vector_store = vector_store
         self.model = model
         self.n_results = n_results
+        self.subject_areas = subject_areas
 
         api_key = api_key or os.getenv("ANTHROPIC_API_KEY")
         if not api_key:
@@ -196,7 +199,8 @@ class EuGHChatbot:
         # Search without year restriction to include older cases
         live_cases = live_search_cases(
             query_terms=query_terms,
-            limit=self.n_results
+            limit=self.n_results,
+            subject_areas=self.subject_areas
         )
 
         if not live_cases:
@@ -460,7 +464,8 @@ Beantworte die Frage basierend auf den obigen Dokumenten. Zitiere die relevanten
 
 def create_chatbot(
     index_dir: Path | str,
-    api_key: str | None = None
+    api_key: str | None = None,
+    subject_areas: list[str] | None = None
 ) -> EuGHChatbot:
     """
     Create a chatbot instance with an existing index.
@@ -468,13 +473,18 @@ def create_chatbot(
     Args:
         index_dir: Path to the vector store index
         api_key: Optional API key
+        subject_areas: Optional EuroVoc descriptor labels to filter live searches
 
     Returns:
         Configured EuGHChatbot instance
     """
 
     vector_store = CaseLawVectorStore(persist_directory=index_dir)
-    return EuGHChatbot(vector_store=vector_store, api_key=api_key)
+    return EuGHChatbot(
+        vector_store=vector_store,
+        api_key=api_key,
+        subject_areas=subject_areas
+    )
 
 
 if __name__ == "__main__":

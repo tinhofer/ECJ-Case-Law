@@ -65,7 +65,8 @@ def get_case_law_metadata(
     offset: int = 0,
     year_from: int | None = None,
     year_to: int | None = None,
-    court: str = "Court of Justice"
+    court: str = "Court of Justice",
+    subject_areas: list[str] | None = None
 ) -> list[dict]:
     """
     Fetch case law metadata from EUR-Lex via SPARQL.
@@ -76,6 +77,8 @@ def get_case_law_metadata(
         year_from: Filter by start year
         year_to: Filter by end year
         court: Court filter (Court of Justice, General Court, Civil Service Tribunal)
+        subject_areas: Optional list of EuroVoc descriptor labels (English) to filter by.
+                       Cases must have at least one matching descriptor.
 
     Returns:
         List of case metadata dictionaries
@@ -87,6 +90,22 @@ def get_case_law_metadata(
         date_filter += f'FILTER(year(?date) >= {year_from})\n'
     if year_to:
         date_filter += f'FILTER(year(?date) <= {year_to})\n'
+
+    # Build EuroVoc subject area filter
+    subject_filter = ""
+    if subject_areas:
+        # Match cases that have at least one EuroVoc descriptor matching the given labels
+        conditions = []
+        for area in subject_areas:
+            escaped = area.replace('"', '\\"')
+            conditions.append(f'LCASE(STR(?eurovocLabel)) = "{escaped.lower()}"')
+        subject_filter = f"""
+        # Subject area filter via EuroVoc descriptors
+        ?work cdm:work_is_about_concept_eurovoc ?eurovoc .
+        ?eurovoc skos:prefLabel ?eurovocLabel .
+        FILTER(lang(?eurovocLabel) = "en")
+        FILTER({" || ".join(conditions)})
+        """
 
     query = f"""
     PREFIX cdm: <http://publications.europa.eu/ontology/cdm#>
@@ -130,6 +149,7 @@ def get_case_law_metadata(
             FILTER(lang(?typeLabel) = "en")
         }}
 
+        {subject_filter}
         {date_filter}
     }}
     ORDER BY DESC(?date)
@@ -304,7 +324,8 @@ def download_case_law_batch(
     limit: int = 100,
     year_from: int | None = None,
     year_to: int | None = None,
-    delay_seconds: float = 1.0
+    delay_seconds: float = 1.0,
+    subject_areas: list[str] | None = None
 ) -> int:
     """
     Download a batch of case law documents.
@@ -315,6 +336,7 @@ def download_case_law_batch(
         year_from: Filter by start year
         year_to: Filter by end year
         delay_seconds: Delay between requests to be respectful to the server
+        subject_areas: Optional list of EuroVoc descriptor labels to filter by
 
     Returns:
         Number of successfully downloaded documents
@@ -323,11 +345,13 @@ def download_case_law_batch(
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    print(f"Fetching metadata for up to {limit} cases...")
+    subject_info = f" in {len(subject_areas)} subject areas" if subject_areas else ""
+    print(f"Fetching metadata for up to {limit} cases{subject_info}...")
     metadata_list = get_case_law_metadata(
         limit=limit,
         year_from=year_from,
-        year_to=year_to
+        year_to=year_to,
+        subject_areas=subject_areas
     )
 
     print(f"Found {len(metadata_list)} cases. Downloading full texts...")
@@ -440,7 +464,9 @@ def get_latest_case_date(data_dir: Path) -> str | None:
 def incremental_update(
     data_dir: Path,
     delay_seconds: float = 1.0,
-    max_new_cases: int = 500
+    max_new_cases: int = 500,
+    subject_areas: list[str] | None = None,
+    initial_year: int = 2018
 ) -> int:
     """
     Download only new cases since the last update.
@@ -452,6 +478,8 @@ def incremental_update(
         data_dir: Directory containing case JSON files
         delay_seconds: Delay between requests
         max_new_cases: Maximum number of new cases to download
+        subject_areas: Optional list of EuroVoc descriptor labels to filter by
+        initial_year: Start year for initial download if no local data exists
 
     Returns:
         Number of new cases downloaded
@@ -467,16 +495,19 @@ def incremental_update(
         print(f"  Most recent local case: {latest_local_date}")
     else:
         print(f"  No local cases found - performing initial download")
-        # If no local data, do initial download from 2020
         return download_case_law_batch(
             output_dir=data_dir,
             limit=max_new_cases,
-            year_from=2020,
-            delay_seconds=delay_seconds
+            year_from=initial_year,
+            delay_seconds=delay_seconds,
+            subject_areas=subject_areas
         )
 
     # Fetch recent metadata to find new cases
-    metadata_list = get_case_law_metadata(limit=max_new_cases)
+    metadata_list = get_case_law_metadata(
+        limit=max_new_cases,
+        subject_areas=subject_areas
+    )
 
     # Filter to only cases newer than our latest
     new_cases = [
@@ -526,7 +557,8 @@ def live_search_cases(
     query_terms: list[str],
     year_from: int | None = None,
     year_to: int | None = None,
-    limit: int = 10
+    limit: int = 10,
+    subject_areas: list[str] | None = None
 ) -> list[dict]:
     """
     Perform a live SPARQL search for cases matching the query terms.
@@ -539,6 +571,7 @@ def live_search_cases(
         year_from: Optional start year filter
         year_to: Optional end year filter
         limit: Maximum results
+        subject_areas: Optional list of EuroVoc descriptor labels to filter by
 
     Returns:
         List of case metadata dicts with basic info
@@ -559,6 +592,20 @@ def live_search_cases(
     if year_to:
         date_filters += f"FILTER(year(?date) <= {year_to})\n"
 
+    # EuroVoc subject area filter
+    subject_filter = ""
+    if subject_areas:
+        conditions = []
+        for area in subject_areas:
+            escaped = area.replace('"', '\\"')
+            conditions.append(f'LCASE(STR(?eurovocLabel)) = "{escaped.lower()}"')
+        subject_filter = f"""
+        ?work cdm:work_is_about_concept_eurovoc ?eurovoc .
+        ?eurovoc skos:prefLabel ?eurovocLabel .
+        FILTER(lang(?eurovocLabel) = "en")
+        FILTER({" || ".join(conditions)})
+        """
+
     query = f"""
     PREFIX cdm: <http://publications.europa.eu/ontology/cdm#>
     PREFIX skos: <http://www.w3.org/2004/02/skos/core#>
@@ -575,6 +622,7 @@ def live_search_cases(
         }}
         OPTIONAL {{ ?work cdm:case-law_case_number ?caseNumber . }}
 
+        {subject_filter}
         FILTER({filter_clause})
         {date_filters}
     }}
@@ -658,12 +706,16 @@ def fetch_case_on_demand(celex: str) -> CaseLawDocument | None:
 
 if __name__ == "__main__":
     # Example: Download recent case law with incremental updates
-    data_dir = Path(__file__).parent.parent / "data" / "cases"
+    from config import get_config
+    cfg = get_config()
+    data_dir = cfg.cases_dir
 
-    # First run: downloads all cases since 2020
+    # First run: downloads cases since initial_year in configured subject areas
     # Subsequent runs: only downloads new cases
     incremental_update(
         data_dir=data_dir,
-        delay_seconds=1.5,
-        max_new_cases=100
+        delay_seconds=cfg.download_delay,
+        max_new_cases=cfg.initial_limit,
+        subject_areas=cfg.subject_areas,
+        initial_year=cfg.initial_year
     )
