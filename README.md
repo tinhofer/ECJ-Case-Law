@@ -16,25 +16,34 @@ A RAG-based (Retrieval-Augmented Generation) chatbot that answers legal question
 ## Quick Start
 
 ```bash
-# Clone and enter the project
 git clone https://github.com/tinhofer/ECJ-Case-Law.git
 cd ECJ-Case-Law/ecj-chatbot
+```
 
-# Create a virtual environment
+Create and activate a virtual environment:
+
+```bash
 python -m venv venv
-source venv/bin/activate  # Linux/Mac
-# venv\Scripts\activate   # Windows
+source venv/bin/activate        # Linux/Mac
+```
+```cmd
+venv\Scripts\activate           # Windows
+```
 
-# Install dependencies
+Install dependencies, configure your API key, and launch:
+
+```bash
 pip install -r requirements.txt
+cp .env.example .env            # Windows: copy .env.example .env
+```
 
-# Configure your API key
-cp .env.example .env
-# Edit .env and add your ANTHROPIC_API_KEY
+Edit `.env` and add your `ANTHROPIC_API_KEY`, then:
 
-# Launch the chatbot
+```bash
 streamlit run app.py
 ```
+
+> If `streamlit` is not found, use: `python -m streamlit run app.py`
 
 On first launch the app automatically downloads ~500 recent ECJ decisions from EUR-Lex and builds the search index. Subsequent launches only fetch new cases.
 

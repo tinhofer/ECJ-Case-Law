@@ -108,6 +108,10 @@ Dann die `.env`-Datei mit einem Texteditor öffnen und Ihren `ANTHROPIC_API_KEY`
 streamlit run app.py
 ```
 
+> Falls `streamlit` nicht gefunden wird: `python -m streamlit run app.py`
+>
+> **Wichtig:** Schritt 2 (venv aktivieren) nicht vergessen! Ohne aktivierte virtuelle Umgebung landen Pakete im globalen Python und Befehle wie `streamlit` sind evtl. nicht im PATH.
+
 Beim ersten Start werden automatisch:
 - EuGH-Entscheidungen seit 2018 heruntergeladen (~500 Fälle)
 - Der Suchindex erstellt
@@ -117,19 +121,22 @@ Beim ersten Start werden automatisch:
 
 Falls Sie mehr Kontrolle wünschen:
 
-```bash
-cd src
+1. Daten herunterladen:
+   ```bash
+   cd src
+   python data_acquisition.py
+   ```
 
-# Daten herunterladen
-python data_acquisition.py
+2. Index erstellen:
+   ```bash
+   python embeddings.py
+   ```
 
-# Index erstellen
-python embeddings.py
-
-# Chatbot starten
-cd ..
-streamlit run app.py
-```
+3. Chatbot starten:
+   ```bash
+   cd ..
+   streamlit run app.py
+   ```
 
 ## Cloud-Speicher (Multi-Device)
 
