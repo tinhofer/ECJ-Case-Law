@@ -34,6 +34,25 @@ class TestConfigDefaults:
         assert "multilingual-MiniLM" in cfg.embedding_model
         assert "claude" in cfg.llm_model
 
+    def test_default_subject_areas(self):
+        cfg = Config()
+        assert isinstance(cfg.subject_areas, list)
+        assert len(cfg.subject_areas) > 0
+        assert "social policy" in cfg.subject_areas
+        assert "data protection" in cfg.subject_areas
+        assert "discrimination" in cfg.subject_areas
+        assert "equal treatment" in cfg.subject_areas
+        assert "fundamental rights" in cfg.subject_areas
+        assert "artificial intelligence" in cfg.subject_areas
+
+    def test_default_initial_year_is_2018(self):
+        cfg = Config()
+        assert cfg.initial_year == 2018
+
+    def test_default_initial_limit_is_1000(self):
+        cfg = Config()
+        assert cfg.initial_limit == 1000
+
 
 class TestEnsureDirectories:
     def test_creates_dirs(self, tmp_path):
@@ -107,7 +126,7 @@ class TestFromEnv:
             for key in env_keys:
                 os.environ.pop(key, None)
             cfg = Config.from_env()
-            assert cfg.initial_year == 2020
+            assert cfg.initial_year == 2018
             assert cfg.enable_live_fallback is True
 
 

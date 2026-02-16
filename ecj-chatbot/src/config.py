@@ -37,10 +37,44 @@ class Config:
     index_subdir: str = "index"
 
     # Download settings
-    initial_year: int = 2020
-    initial_limit: int = 500
+    initial_year: int = 2018
+    initial_limit: int = 1000
     update_limit: int = 100
     download_delay: float = 1.0
+
+    # Subject area filter: EuroVoc descriptor labels (English)
+    # Cases must match at least one of these descriptors to be included.
+    # Covers: employment/social policy, data protection/AI, discrimination/equal treatment
+    subject_areas: list[str] = field(default_factory=lambda: [
+        # Employment / Social Policy / Workers' Rights
+        "social policy",
+        "employment",
+        "employment contract",
+        "employment policy",
+        "labour law",
+        "labour relations",
+        "working conditions",
+        "worker",
+        "workers' rights",
+        "posted worker",
+        "migrant worker",
+        "temporary worker",
+        "self-employed worker",
+        "social security",
+        "free movement of workers",
+        # Data Protection / Privacy / AI
+        "data protection",
+        "protection of privacy",
+        "personal data",
+        "artificial intelligence",
+        # Discrimination / Equal Treatment / Fundamental Rights
+        "discrimination",
+        "discrimination based on nationality",
+        "equal treatment",
+        "sex discrimination",
+        "racial discrimination",
+        "fundamental rights",
+    ])
 
     # Search settings
     n_results: int = 5

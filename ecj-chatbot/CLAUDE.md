@@ -8,15 +8,16 @@ Entwicklung eines RAG-basierten Chatbots, der Fragen **ausschließlich** auf Gru
 
 ## Aktueller Stand
 
-**Branch:** `claude/eu-court-chatbot-r1gjM`
+**Branch:** `claude/expand-cases-filter-areas-ENgfc`
 
 **Commits:**
 1. ✅ `feat: Add EuGH case law chatbot with RAG architecture`
 2. ✅ `feat: Add multilingual support with DE/EN/FR fallback`
 3. ✅ `feat: Add incremental updates and live fallback search`
 4. ✅ `feat: Add configurable data paths for cloud storage support`
+5. ✅ `feat: Expand cases to 2018 and filter by employment, data protection, and discrimination areas`
 
-**Status:** Feature-komplett, bereit für Tests und PR
+**Status:** Feature-komplett, alle 65 Tests bestanden
 
 ## Architektur
 
@@ -94,22 +95,32 @@ ecj-chatbot/
 - Auto-Index-Erstellung wenn Daten vorhanden aber Index fehlt
 - Nur JSON-Daten werden synchronisiert (nicht Index)
 
+### 6. Rechtsgebietsfilterung via EuroVoc
+- SPARQL-Abfragen filtern über `cdm:work_is_about_concept_eurovoc`
+- 26 EuroVoc-Deskriptoren in drei Schwerpunktbereichen konfiguriert:
+  - **Arbeitsrecht / Sozialpolitik** (15): social policy, employment, employment contract, employment policy, labour law, labour relations, working conditions, worker, workers' rights, posted worker, migrant worker, temporary worker, self-employed worker, social security, free movement of workers
+  - **Datenschutz / KI** (4): data protection, protection of privacy, personal data, artificial intelligence
+  - **Diskriminierung / Gleichbehandlung** (7): discrimination, discrimination based on nationality, equal treatment, sex discrimination, racial discrimination, fundamental rights
+- Fälle müssen mindestens einen passenden Deskriptor haben (OR-Logik)
+- Filter wird auf alle Datenpfade angewendet: Erstdownload, inkrementelle Updates, Live-Fallback
+
 ## Wichtige Dateien
 
 ### `src/config.py`
 Zentrale Konfiguration mit Umgebungsvariablen:
 - `ECJ_DATA_DIR`: Pfad zum Datenordner (Cloud-Ordner möglich)
-- `ECJ_INITIAL_YEAR`: Startjahr für Download (default: 2020)
+- `ECJ_INITIAL_YEAR`: Startjahr für Download (default: 2018)
 - `ECJ_ENABLE_LIVE_FALLBACK`: Live-Suche aktivieren (default: true)
+- `subject_areas`: Liste von EuroVoc-Deskriptoren (English) zur Filterung nach Rechtsgebiet
 
 ### `src/data_acquisition.py`
-- `get_case_law_metadata()`: SPARQL-Abfrage für Metadaten
+- `get_case_law_metadata()`: SPARQL-Abfrage für Metadaten, mit optionaler EuroVoc-Filterung
 - `fetch_document_text_with_fallback()`: Download mit Sprach-Fallback
-- `incremental_update()`: Nur neue Fälle laden
-- `live_search_cases()`: Live-SPARQL-Suche für ältere Fälle
+- `incremental_update()`: Nur neue Fälle laden (mit Rechtsgebietsfilter)
+- `live_search_cases()`: Live-SPARQL-Suche für ältere Fälle (mit Rechtsgebietsfilter)
 
 ### `src/rag_pipeline.py`
-- `EuGHChatbot`: Hauptklasse für den Chatbot
+- `EuGHChatbot`: Hauptklasse für den Chatbot (mit `subject_areas` für Live-Fallback)
 - `search_relevant_cases()`: Suche mit optionalem Live-Fallback
 - `answer_stream()`: Streaming-Antworten mit Claude
 
@@ -124,10 +135,11 @@ Zentrale Konfiguration mit Umgebungsvariablen:
 1. `pip install -r requirements.txt`
 2. `.env` mit `ANTHROPIC_API_KEY` erstellen
 3. `streamlit run app.py`
-4. Erster Start lädt ~500 Fälle (dauert ~10-15 Min)
+4. Erster Start lädt bis zu ~1000 Fälle ab 2018 in den konfigurierten Rechtsgebieten
 
 ### Mögliche Erweiterungen
-- [ ] Filterung nach Rechtsgebiet/Gericht
+- [x] Filterung nach Rechtsgebiet (via EuroVoc-Deskriptoren)
+- [ ] Filterung nach Gericht (Court of Justice / General Court)
 - [ ] Caching für API-Anfragen
 - [ ] FastAPI REST-Endpunkt
 - [ ] Docker-Container
@@ -166,7 +178,7 @@ gh pr create --title "feat: EuGH Case Law Chatbot" --body "..."
 ## Kontext für neue Sessions
 
 Bei Fortsetzung in neuer Session:
-1. Branch `claude/eu-court-chatbot-r1gjM` auschecken
+1. Branch `claude/expand-cases-filter-areas-ENgfc` auschecken
 2. Diese Datei lesen für Kontext
 3. `notes.md` für detaillierte Entwicklungsnotizen
 4. `README.md` für Benutzer-Dokumentation

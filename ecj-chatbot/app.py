@@ -65,13 +65,16 @@ def initialize_data_and_index(auto_update: bool = True) -> bool:
     # Case 2: No data - initial download
     if not has_data:
         initial_year = config.initial_year
-        st.info(f"Erste Initialisierung: Lade EuGH-Entscheidungen seit {initial_year}...")
+        subject_areas = config.subject_areas
+        area_info = f" in {len(subject_areas)} Rechtsgebieten" if subject_areas else ""
+        st.info(f"Erste Initialisierung: Lade EuGH-Entscheidungen seit {initial_year}{area_info}...")
         with st.spinner("Lade Daten von EUR-Lex..."):
             downloaded = download_case_law_batch(
                 output_dir=cases_dir,
                 limit=config.initial_limit,
                 year_from=initial_year,
-                delay_seconds=config.download_delay
+                delay_seconds=config.download_delay,
+                subject_areas=subject_areas
             )
             st.success(f"{downloaded} Entscheidungen heruntergeladen.")
 
@@ -92,7 +95,9 @@ def initialize_data_and_index(auto_update: bool = True) -> bool:
             new_cases = incremental_update(
                 data_dir=cases_dir,
                 delay_seconds=config.download_delay,
-                max_new_cases=config.update_limit
+                max_new_cases=config.update_limit,
+                subject_areas=config.subject_areas,
+                initial_year=config.initial_year
             )
 
         if new_cases > 0:
@@ -137,7 +142,9 @@ def init_chatbot(auto_update: bool = False) -> EuGHChatbot | None:
             return None
 
         try:
-            st.session_state.chatbot = create_chatbot(index_dir, api_key)
+            st.session_state.chatbot = create_chatbot(
+                index_dir, api_key, subject_areas=config.subject_areas
+            )
         except Exception as e:
             st.error(f"Fehler beim Initialisieren des Chatbots: {e}")
             return None
@@ -250,7 +257,9 @@ def main():
                 new_cases = incremental_update(
                     data_dir=config.cases_dir,
                     delay_seconds=config.download_delay,
-                    max_new_cases=config.update_limit
+                    max_new_cases=config.update_limit,
+                    subject_areas=config.subject_areas,
+                    initial_year=config.initial_year
                 )
             if new_cases > 0:
                 st.success(f"{new_cases} neue Entscheidungen geladen!")
