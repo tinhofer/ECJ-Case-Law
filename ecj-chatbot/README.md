@@ -44,53 +44,73 @@ Ein RAG-basierter (Retrieval-Augmented Generation) Chatbot, der Fragen ausschlie
 
 ### Voraussetzungen
 
-- Python 3.11 oder höher
-- Anthropic API Key (für Claude)
+1. **Python 3.11 oder höher** — [Download](https://www.python.org/downloads/)
+   - Bei der Installation unbedingt **"Add Python to PATH"** ankreuzen!
+2. **Git** — [Download](https://git-scm.com/downloads)
+3. **Anthropic API Key** — [Account erstellen](https://console.anthropic.com/)
+4. **Terminal** — Eingabeaufforderung, PowerShell oder Node.js command prompt (Windows) bzw. Terminal (Mac/Linux)
+
+Prüfen Sie nach der Installation, ob alles funktioniert:
+```bash
+python --version   # sollte 3.11+ anzeigen
+git --version      # sollte eine Versionsnummer anzeigen
+```
 
 ### Setup
 
-```bash
-# Repository von GitHub klonen (erstellt eine lokale Kopie)
-git clone https://github.com/tinhofer/ECJ-Case-Law.git
-cd ECJ-Case-Law/ecj-chatbot
-
-# Virtuelle Umgebung erstellen
-python -m venv venv
-source venv/bin/activate  # Linux/Mac
-# oder: venv\Scripts\activate  # Windows
-
-# Abhängigkeiten installieren
-pip install -r requirements.txt
-
-# Umgebungsvariablen konfigurieren
-cp .env.example .env
-# Bearbeiten Sie .env und fügen Sie Ihren ANTHROPIC_API_KEY ein
-```
+Siehe [Schnellstart](#schnellstart) weiter unten für eine Schritt-für-Schritt-Anleitung.
 
 ## Verwendung
 
 ### Schnellstart
 
+**Schritt 1 — Repository klonen:**
 ```bash
-# 1. Repository klonen und in den Projektordner wechseln
 git clone https://github.com/tinhofer/ECJ-Case-Law.git
 cd ECJ-Case-Law/ecj-chatbot
+```
 
-# 2. Virtuelle Umgebung erstellen und aktivieren
+**Schritt 2 — Virtuelle Umgebung erstellen und aktivieren:**
+
+Windows:
+```cmd
 python -m venv venv
-source venv/bin/activate  # Linux/Mac
-# oder: venv\Scripts\activate  # Windows
+venv\Scripts\activate
+```
 
-# 3. Abhängigkeiten installieren
+Linux/Mac:
+```bash
+python -m venv venv
+source venv/bin/activate
+```
+
+**Schritt 3 — Abhängigkeiten installieren:**
+```bash
 pip install -r requirements.txt
+```
 
-# 4. Umgebung einrichten
+**Schritt 4 — API-Key konfigurieren:**
+
+Windows:
+```cmd
+copy .env.example .env
+```
+
+Linux/Mac:
+```bash
 cp .env.example .env
-# .env-Datei öffnen und Ihren ANTHROPIC_API_KEY eintragen
+```
 
-# 5. Chatbot starten - alles andere passiert automatisch!
+Dann die `.env`-Datei mit einem Texteditor öffnen und Ihren `ANTHROPIC_API_KEY` eintragen.
+
+**Schritt 5 — Chatbot starten:**
+```bash
 streamlit run app.py
 ```
+
+> Falls `streamlit` nicht gefunden wird: `python -m streamlit run app.py`
+>
+> **Wichtig:** Schritt 2 (venv aktivieren) nicht vergessen! Ohne aktivierte virtuelle Umgebung landen Pakete im globalen Python und Befehle wie `streamlit` sind evtl. nicht im PATH.
 
 Beim ersten Start werden automatisch:
 - EuGH-Entscheidungen seit 2018 heruntergeladen (~500 Fälle)
@@ -101,23 +121,28 @@ Beim ersten Start werden automatisch:
 
 Falls Sie mehr Kontrolle wünschen:
 
-```bash
-cd src
+1. Daten herunterladen:
+   ```bash
+   cd src
+   python data_acquisition.py
+   ```
 
-# Daten herunterladen
-python data_acquisition.py
+2. Index erstellen:
+   ```bash
+   python embeddings.py
+   ```
 
-# Index erstellen
-python embeddings.py
-
-# Chatbot starten
-cd ..
-streamlit run app.py
-```
+3. Chatbot starten:
+   ```bash
+   cd ..
+   streamlit run app.py
+   ```
 
 ## Cloud-Speicher (Multi-Device)
 
-Sie können die Daten in einem Cloud-Ordner speichern, um von mehreren Geräten darauf zuzugreifen.
+> **Wichtig:** Klonen Sie das Repository **nicht** direkt in einen Cloud-Ordner (OneDrive, Dropbox, Google Drive). Cloud-Sync-Dienste können die internen Git-Dateien und den ChromaDB-Index beschädigen. Speichern Sie das Repository in einem normalen lokalen Ordner (z.B. `C:\Users\IhrName\ECJ-Case-Law`).
+
+Sie können aber die **heruntergeladenen EuGH-Fälle** in einem Cloud-Ordner speichern, um von mehreren Geräten darauf zuzugreifen.
 
 ### Einrichtung
 
