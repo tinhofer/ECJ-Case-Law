@@ -7,12 +7,22 @@ Run with: streamlit run app.py
 """
 
 import os
+import sys
 from pathlib import Path
+
+# Check Python version compatibility before importing dependencies
+if sys.version_info >= (3, 14):
+    print(
+        "WARNING: Python 3.14+ is not yet supported by chromadb.\n"
+        "Please use Python 3.11-3.13.\n"
+        "You can install Python 3.13 from https://www.python.org/downloads/\n"
+        "Then run: py -3.13 -m streamlit run app.py"
+    )
+    sys.exit(1)
 
 import streamlit as st
 
 # Add src to path
-import sys
 sys.path.insert(0, str(Path(__file__).parent / "src"))
 
 from config import get_config, set_data_dir, Config
