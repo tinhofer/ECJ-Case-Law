@@ -50,9 +50,9 @@ Ein RAG-basierter (Retrieval-Augmented Generation) Chatbot, der Fragen ausschlie
 ### Setup
 
 ```bash
-# Repository klonen
-git clone <repository-url>
-cd ecj-chatbot
+# Repository von GitHub klonen (erstellt eine lokale Kopie)
+git clone https://github.com/tinhofer/ECJ-Case-Law.git
+cd ECJ-Case-Law/ecj-chatbot
 
 # Virtuelle Umgebung erstellen
 python -m venv venv
@@ -72,16 +72,28 @@ cp .env.example .env
 ### Schnellstart
 
 ```bash
-# 1. Umgebung einrichten
-cp .env.example .env
-# API-Key in .env eintragen
+# 1. Repository klonen und in den Projektordner wechseln
+git clone https://github.com/tinhofer/ECJ-Case-Law.git
+cd ECJ-Case-Law/ecj-chatbot
 
-# 2. Chatbot starten - alles andere passiert automatisch!
+# 2. Virtuelle Umgebung erstellen und aktivieren
+python -m venv venv
+source venv/bin/activate  # Linux/Mac
+# oder: venv\Scripts\activate  # Windows
+
+# 3. Abhängigkeiten installieren
+pip install -r requirements.txt
+
+# 4. Umgebung einrichten
+cp .env.example .env
+# .env-Datei öffnen und Ihren ANTHROPIC_API_KEY eintragen
+
+# 5. Chatbot starten - alles andere passiert automatisch!
 streamlit run app.py
 ```
 
 Beim ersten Start werden automatisch:
-- EuGH-Entscheidungen seit 2020 heruntergeladen (~500 Fälle)
+- EuGH-Entscheidungen seit 2018 heruntergeladen (~500 Fälle)
 - Der Suchindex erstellt
 - Bei weiteren Starts nur neue Fälle nachgeladen
 
