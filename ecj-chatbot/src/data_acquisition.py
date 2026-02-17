@@ -674,6 +674,24 @@ def get_latest_case_date(data_dir: Path) -> str | None:
     return latest_date
 
 
+def get_local_celex_numbers(data_dir: Path) -> set[str]:
+    """
+    Get the set of CELEX numbers already downloaded locally.
+
+    Returns:
+        Set of CELEX strings
+    """
+    celex_numbers = set()
+    for json_file in Path(data_dir).glob("*.json"):
+        if json_file.name == CHECKPOINT_FILE:
+            continue
+        # Filename format: 62023CJ0060.json (CELEX with ':' replaced by '_')
+        # Reverse the transformation to get the CELEX number
+        celex = json_file.stem.replace('_', ':')
+        celex_numbers.add(celex)
+    return celex_numbers
+
+
 def incremental_update(
     data_dir: Path,
     delay_seconds: float = 1.0,
@@ -686,13 +704,15 @@ def incremental_update(
     Download only new cases since the last update.
 
     On first run (no local data), fetches ALL cases since initial_year
-    via paginated SPARQL queries. On subsequent runs, fetches only the
-    most recent cases and downloads any that are newer than the local data.
+    via paginated SPARQL queries. On subsequent runs, fetches the most
+    recent metadata and downloads any cases not yet present locally
+    (identified by CELEX number, not by date — this ensures that cases
+    added to CELLAR with a delay are not missed).
 
     Args:
         data_dir: Directory containing case JSON files
         delay_seconds: Delay between requests
-        max_new_cases: Maximum new cases to check per update (not used for initial download)
+        max_new_cases: Number of recent cases to check per update
         subject_areas: Optional list of EuroVoc descriptor labels for SPARQL filtering
         subject_keywords_de: Optional list of German keywords for Stichwort filtering
         initial_year: Start year for initial download if no local data exists
@@ -704,11 +724,12 @@ def incremental_update(
     data_dir.mkdir(parents=True, exist_ok=True)
 
     checkpoint = load_checkpoint(data_dir)
-    latest_local_date = get_latest_case_date(data_dir)
+    local_celex = get_local_celex_numbers(data_dir)
+    has_data = len(local_celex) > 0
 
     print(f"Checking for new cases...")
-    if latest_local_date:
-        print(f"  Most recent local case: {latest_local_date}")
+    if has_data:
+        print(f"  {len(local_celex)} cases in local database")
     else:
         print(f"  No local cases found - performing full initial download since {initial_year}")
         return download_case_law_batch(
@@ -719,16 +740,16 @@ def incremental_update(
             subject_keywords_de=subject_keywords_de
         )
 
-    # For updates: fetch recent metadata (single page is sufficient)
+    # Fetch recent metadata and find cases not yet downloaded locally
     metadata_list = get_case_law_metadata(
         limit=max_new_cases,
         subject_areas=subject_areas
     )
 
-    # Filter to only cases newer than our latest
+    # Filter to cases we don't have yet (by CELEX number)
     new_cases = [
         m for m in metadata_list
-        if m.get('date', '') > latest_local_date
+        if m.get('celex', '') and m['celex'] not in local_celex
     ]
 
     if not new_cases:
@@ -767,6 +788,8 @@ def incremental_update(
     checkpoint["total_downloaded"] = checkpoint.get("total_downloaded", 0) + downloaded
     save_checkpoint(data_dir, checkpoint)
 
+    if skipped:
+        print(f"  Skipped {skipped} cases not matching subject keywords")
     print(f"  Downloaded {downloaded} new cases.")
     return downloaded
 
