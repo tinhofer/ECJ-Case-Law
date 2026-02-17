@@ -60,29 +60,14 @@ class CaseLawDocument:
         return LANGUAGE_NAMES.get(self.language, self.language)
 
 
-def get_case_law_metadata(
+def _build_sparql_query(
     limit: int = 1000,
     offset: int = 0,
     year_from: int | None = None,
     year_to: int | None = None,
-    court: str = "Court of Justice",
     subject_areas: list[str] | None = None
-) -> list[dict]:
-    """
-    Fetch case law metadata from EUR-Lex via SPARQL.
-
-    Args:
-        limit: Maximum number of results
-        offset: Offset for pagination
-        year_from: Filter by start year
-        year_to: Filter by end year
-        court: Court filter (Court of Justice, General Court, Civil Service Tribunal)
-        subject_areas: Optional list of EuroVoc descriptor labels (English) to filter by.
-                       Cases must have at least one matching descriptor.
-
-    Returns:
-        List of case metadata dictionaries
-    """
+) -> str:
+    """Build a SPARQL query for case law metadata."""
 
     # Build date filter
     date_filter = ""
@@ -94,7 +79,6 @@ def get_case_law_metadata(
     # Build EuroVoc subject area filter
     subject_filter = ""
     if subject_areas:
-        # Match cases that have at least one EuroVoc descriptor matching the given labels
         conditions = []
         for area in subject_areas:
             escaped = area.replace('"', '\\"')
@@ -107,7 +91,7 @@ def get_case_law_metadata(
         FILTER({" || ".join(conditions)})
         """
 
-    query = f"""
+    return f"""
     PREFIX cdm: <http://publications.europa.eu/ontology/cdm#>
     PREFIX skos: <http://www.w3.org/2004/02/skos/core#>
     PREFIX xsd: <http://www.w3.org/2001/XMLSchema#>
@@ -157,6 +141,9 @@ def get_case_law_metadata(
     OFFSET {offset}
     """
 
+
+def _execute_sparql_query(query: str) -> list[dict]:
+    """Execute a SPARQL query and return parsed case metadata."""
     sparql = SPARQLWrapper(SPARQL_ENDPOINT)
     sparql.setQuery(query)
     sparql.setReturnFormat(JSON)
@@ -183,6 +170,48 @@ def get_case_law_metadata(
     except Exception as e:
         print(f"SPARQL query failed: {e}")
         return []
+
+
+def get_case_law_metadata(
+    limit: int = 1000,
+    offset: int = 0,
+    year_from: int | None = None,
+    year_to: int | None = None,
+    court: str = "Court of Justice",
+    subject_areas: list[str] | None = None
+) -> list[dict]:
+    """
+    Fetch case law metadata from EUR-Lex via SPARQL.
+
+    If subject_areas are provided but the query returns 0 results (EuroVoc
+    descriptors are often not available for case-law in CELLAR), the query
+    is automatically retried without the subject area filter.
+
+    Args:
+        limit: Maximum number of results
+        offset: Offset for pagination
+        year_from: Filter by start year
+        year_to: Filter by end year
+        court: Court filter (Court of Justice, General Court, Civil Service Tribunal)
+        subject_areas: Optional list of EuroVoc descriptor labels (English) to filter by.
+                       Cases must have at least one matching descriptor.
+
+    Returns:
+        List of case metadata dictionaries
+    """
+    # Try with subject area filter first
+    if subject_areas:
+        query = _build_sparql_query(limit, offset, year_from, year_to, subject_areas)
+        cases = _execute_sparql_query(query)
+        if cases:
+            return cases
+        # EuroVoc descriptors are often not linked to case-law in CELLAR.
+        # Fall back to querying without the subject area filter.
+        print("  EuroVoc subject filter returned 0 results for case-law. "
+              "Retrying without subject area filter...")
+
+    query = _build_sparql_query(limit, offset, year_from, year_to, subject_areas=None)
+    return _execute_sparql_query(query)
 
 
 def fetch_document_text(celex: str, language: str = "DE") -> str | None:
@@ -553,33 +582,17 @@ def incremental_update(
 # LIVE SPARQL SEARCH (FALLBACK FOR OLDER CASES)
 # =============================================================================
 
-def live_search_cases(
+def _build_live_search_query(
     query_terms: list[str],
     year_from: int | None = None,
     year_to: int | None = None,
     limit: int = 10,
     subject_areas: list[str] | None = None
-) -> list[dict]:
-    """
-    Perform a live SPARQL search for cases matching the query terms.
-
-    This is used as a fallback when the local index doesn't have relevant results.
-    Searches in case titles and subjects.
-
-    Args:
-        query_terms: List of search terms (will be OR-combined)
-        year_from: Optional start year filter
-        year_to: Optional end year filter
-        limit: Maximum results
-        subject_areas: Optional list of EuroVoc descriptor labels to filter by
-
-    Returns:
-        List of case metadata dicts with basic info
-    """
+) -> str:
+    """Build a SPARQL query for live case search."""
     # Build FILTER for search terms (case-insensitive search in title)
     term_filters = []
     for term in query_terms:
-        # Escape special characters for SPARQL
         escaped = term.replace('"', '\\"').replace("'", "\\'")
         term_filters.append(f'CONTAINS(LCASE(?title), LCASE("{escaped}"))')
 
@@ -606,7 +619,7 @@ def live_search_cases(
         FILTER({" || ".join(conditions)})
         """
 
-    query = f"""
+    return f"""
     PREFIX cdm: <http://publications.europa.eu/ontology/cdm#>
     PREFIX skos: <http://www.w3.org/2004/02/skos/core#>
 
@@ -630,6 +643,9 @@ def live_search_cases(
     LIMIT {limit}
     """
 
+
+def _execute_live_search_query(query: str) -> list[dict]:
+    """Execute a live search SPARQL query and return results."""
     sparql = SPARQLWrapper(SPARQL_ENDPOINT)
     sparql.setQuery(query)
     sparql.setReturnFormat(JSON)
@@ -651,6 +667,45 @@ def live_search_cases(
     except Exception as e:
         print(f"Live SPARQL search failed: {e}")
         return []
+
+
+def live_search_cases(
+    query_terms: list[str],
+    year_from: int | None = None,
+    year_to: int | None = None,
+    limit: int = 10,
+    subject_areas: list[str] | None = None
+) -> list[dict]:
+    """
+    Perform a live SPARQL search for cases matching the query terms.
+
+    This is used as a fallback when the local index doesn't have relevant results.
+    Searches in case titles and subjects.
+
+    If subject_areas are provided but the query returns 0 results (EuroVoc
+    descriptors are often not available for case-law in CELLAR), the query
+    is automatically retried without the subject area filter.
+
+    Args:
+        query_terms: List of search terms (will be OR-combined)
+        year_from: Optional start year filter
+        year_to: Optional end year filter
+        limit: Maximum results
+        subject_areas: Optional list of EuroVoc descriptor labels to filter by
+
+    Returns:
+        List of case metadata dicts with basic info
+    """
+    # Try with subject area filter first
+    if subject_areas:
+        query = _build_live_search_query(query_terms, year_from, year_to, limit, subject_areas)
+        cases = _execute_live_search_query(query)
+        if cases:
+            return cases
+
+    # Retry without subject area filter
+    query = _build_live_search_query(query_terms, year_from, year_to, limit, subject_areas=None)
+    return _execute_live_search_query(query)
 
 
 def fetch_case_on_demand(celex: str) -> CaseLawDocument | None:
