@@ -5,6 +5,7 @@ This module handles fetching case law data from EUR-Lex via SPARQL queries.
 """
 
 import json
+import re
 import time
 from dataclasses import dataclass, asdict
 from datetime import datetime
@@ -60,29 +61,115 @@ class CaseLawDocument:
         return LANGUAGE_NAMES.get(self.language, self.language)
 
 
-def get_case_law_metadata(
+def extract_stichwort(text: str, language: str = "DE") -> list[str]:
+    """
+    Extract the "Stichwort" (subject keywords) from the header of an EuGH decision.
+
+    EuGH decisions on EUR-Lex begin with a structured header that contains
+    subject keywords in quotation marks, separated by en-dashes (–).
+
+    Examples:
+        DE: „Vorlage zur Vorabentscheidung – Sozialpolitik – Gleichbehandlung – ..."
+        EN: (Reference for a preliminary ruling — Social policy — Equal treatment — ...)
+        FR: « Renvoi préjudiciel – Politique sociale – Égalité de traitement – ... »
+
+    Args:
+        text: Full document text
+        language: Language code (DE, EN, FR)
+
+    Returns:
+        List of keyword strings extracted from the Stichwort section
+    """
+    if not text:
+        return []
+
+    # Search only the first portion of the text (the header)
+    header = text[:3000]
+
+    stichwort_text = None
+
+    if language == "DE":
+        # German: „..." (U+201E ... U+201C) or "..." with special quotes
+        match = re.search(r'\u201e(.+?)\u201c', header, re.DOTALL)
+        if not match:
+            # Fallback: sometimes „..." uses different closing quote "
+            match = re.search(r'\u201e(.+?)["\u201d]', header, re.DOTALL)
+        if match:
+            stichwort_text = match.group(1)
+    elif language == "EN":
+        # English: typically in parentheses after (*), or with single quotes
+        match = re.search(r'\(\s*(Reference for a preliminary ruling.+?)\)', header, re.DOTALL)
+        if not match:
+            match = re.search(r'\u2018(.+?)\u2019', header, re.DOTALL)
+        if not match:
+            # Broader pattern: parenthesized text with dashes near the top
+            match = re.search(r'\(\s*([A-Z][^)]*\s[\u2013\u2014–—-]\s[^)]+)\)', header, re.DOTALL)
+        if match:
+            stichwort_text = match.group(1)
+    elif language == "FR":
+        # French: « ... » (guillemets)
+        match = re.search(r'\u00ab\s*(.+?)\s*\u00bb', header, re.DOTALL)
+        if match:
+            stichwort_text = match.group(1)
+
+    if not stichwort_text:
+        return []
+
+    # Split by en-dash (–), em-dash (—), or regular dash surrounded by spaces
+    keywords = re.split(r'\s*[\u2013\u2014–—]\s*', stichwort_text)
+
+    # Clean up: strip whitespace, collapse internal whitespace, filter empty
+    cleaned = []
+    for kw in keywords:
+        kw = ' '.join(kw.split()).strip()
+        if kw and len(kw) > 1:
+            cleaned.append(kw)
+
+    return cleaned
+
+
+def matches_subject_filter(
+    keywords: list[str],
+    subject_keywords: list[str]
+) -> bool:
+    """
+    Check if a document's Stichwort keywords match any configured subject keywords.
+
+    Uses case-insensitive substring matching so that e.g. "Gleichbehandlung"
+    matches "Gleichbehandlung in Beschäftigung und Beruf".
+
+    Args:
+        keywords: Keywords extracted from the document's Stichwort
+        subject_keywords: Configured subject keyword terms to match against
+
+    Returns:
+        True if at least one keyword matches a subject term
+    """
+    if not subject_keywords:
+        return True  # No filter configured = accept all
+
+    if not keywords:
+        return False
+
+    keywords_lower = [kw.lower() for kw in keywords]
+
+    for subject_term in subject_keywords:
+        term_lower = subject_term.lower()
+        for kw in keywords_lower:
+            if term_lower in kw or kw in term_lower:
+                return True
+
+    return False
+
+
+def _build_sparql_query(
     limit: int = 1000,
     offset: int = 0,
     year_from: int | None = None,
     year_to: int | None = None,
-    court: str = "Court of Justice",
     subject_areas: list[str] | None = None
-) -> list[dict]:
-    """
-    Fetch case law metadata from EUR-Lex via SPARQL.
-
-    Args:
-        limit: Maximum number of results
-        offset: Offset for pagination
-        year_from: Filter by start year
-        year_to: Filter by end year
-        court: Court filter (Court of Justice, General Court, Civil Service Tribunal)
-        subject_areas: Optional list of EuroVoc descriptor labels (English) to filter by.
-                       Cases must have at least one matching descriptor.
-
-    Returns:
-        List of case metadata dictionaries
-    """
+) -> str:
+    """Build a SPARQL query for case law metadata."""
 
     # Build date filter
     date_filter = ""
@@ -94,7 +181,6 @@ def get_case_law_metadata(
     # Build EuroVoc subject area filter
     subject_filter = ""
     if subject_areas:
-        # Match cases that have at least one EuroVoc descriptor matching the given labels
         conditions = []
         for area in subject_areas:
             escaped = area.replace('"', '\\"')
@@ -107,7 +193,7 @@ def get_case_law_metadata(
         FILTER({" || ".join(conditions)})
         """
 
-    query = f"""
+    return f"""
     PREFIX cdm: <http://publications.europa.eu/ontology/cdm#>
     PREFIX skos: <http://www.w3.org/2004/02/skos/core#>
     PREFIX xsd: <http://www.w3.org/2001/XMLSchema#>
@@ -157,6 +243,9 @@ def get_case_law_metadata(
     OFFSET {offset}
     """
 
+
+def _execute_sparql_query(query: str) -> list[dict]:
+    """Execute a SPARQL query and return parsed case metadata."""
     sparql = SPARQLWrapper(SPARQL_ENDPOINT)
     sparql.setQuery(query)
     sparql.setReturnFormat(JSON)
@@ -183,6 +272,107 @@ def get_case_law_metadata(
     except Exception as e:
         print(f"SPARQL query failed: {e}")
         return []
+
+
+def get_case_law_metadata(
+    limit: int = 1000,
+    offset: int = 0,
+    year_from: int | None = None,
+    year_to: int | None = None,
+    court: str = "Court of Justice",
+    subject_areas: list[str] | None = None
+) -> list[dict]:
+    """
+    Fetch case law metadata from EUR-Lex via SPARQL (single page).
+
+    If subject_areas are provided but the query returns 0 results (EuroVoc
+    descriptors are often not available for case-law in CELLAR), the query
+    is automatically retried without the subject area filter.
+
+    Args:
+        limit: Maximum number of results
+        offset: Offset for pagination
+        year_from: Filter by start year
+        year_to: Filter by end year
+        court: Court filter (Court of Justice, General Court, Civil Service Tribunal)
+        subject_areas: Optional list of EuroVoc descriptor labels (English) to filter by.
+                       Cases must have at least one matching descriptor.
+
+    Returns:
+        List of case metadata dictionaries
+    """
+    # Try with subject area filter first
+    if subject_areas:
+        query = _build_sparql_query(limit, offset, year_from, year_to, subject_areas)
+        cases = _execute_sparql_query(query)
+        if cases:
+            return cases
+        # EuroVoc descriptors are often not linked to case-law in CELLAR.
+        # Fall back to querying without the subject area filter.
+        print("  EuroVoc subject filter returned 0 results for case-law. "
+              "Retrying without subject area filter...")
+
+    query = _build_sparql_query(limit, offset, year_from, year_to, subject_areas=None)
+    return _execute_sparql_query(query)
+
+
+def get_all_case_law_metadata(
+    year_from: int | None = None,
+    year_to: int | None = None,
+    subject_areas: list[str] | None = None,
+    page_size: int = 1000
+) -> list[dict]:
+    """
+    Fetch ALL case law metadata from EUR-Lex via paginated SPARQL queries.
+
+    Automatically pages through all results until no more are returned.
+
+    Args:
+        year_from: Filter by start year
+        year_to: Filter by end year
+        subject_areas: Optional list of EuroVoc descriptor labels for SPARQL filtering
+        page_size: Number of results per SPARQL query (max ~10000 for the endpoint)
+
+    Returns:
+        List of all case metadata dictionaries
+    """
+    all_cases = []
+    offset = 0
+    page = 1
+
+    while True:
+        print(f"  Fetching metadata page {page} (offset {offset})...")
+        cases = get_case_law_metadata(
+            limit=page_size,
+            offset=offset,
+            year_from=year_from,
+            year_to=year_to,
+            subject_areas=subject_areas
+        )
+
+        if not cases:
+            break
+
+        all_cases.extend(cases)
+        print(f"    Got {len(cases)} cases (total so far: {len(all_cases)})")
+
+        # If we got fewer results than the page size, we've reached the end
+        if len(cases) < page_size:
+            break
+
+        offset += page_size
+        page += 1
+
+    # Deduplicate by CELEX number (pagination can sometimes return overlaps)
+    seen = set()
+    unique_cases = []
+    for case in all_cases:
+        celex = case.get("celex", "")
+        if celex and celex not in seen:
+            seen.add(celex)
+            unique_cases.append(case)
+
+    return unique_cases
 
 
 def fetch_document_text(celex: str, language: str = "DE") -> str | None:
@@ -276,6 +466,7 @@ def create_case_document(metadata: dict) -> CaseLawDocument | None:
 
     Tries to fetch the document in German first, then English, then French.
     This ensures that recent decisions not yet translated to German are still included.
+    Extracts Stichwort keywords from the document header and stores them.
 
     Args:
         metadata: Case metadata dictionary
@@ -292,6 +483,9 @@ def create_case_document(metadata: dict) -> CaseLawDocument | None:
     text, language = fetch_document_text_with_fallback(celex)
     if not text:
         return None
+
+    # Extract Stichwort keywords from the document header
+    keywords = extract_stichwort(text, language)
 
     # Build URLs - use the language the document was fetched in
     eurlex_url = f"https://eur-lex.europa.eu/legal-content/{language}/TXT/?uri=CELEX:{celex}"
@@ -314,29 +508,35 @@ def create_case_document(metadata: dict) -> CaseLawDocument | None:
         eurlex_url=eurlex_url,
         curia_url=curia_url,
         ecli=metadata.get("ecli"),
-        keywords=[],
+        keywords=keywords,
         language=language
     )
 
 
 def download_case_law_batch(
     output_dir: Path,
-    limit: int = 100,
     year_from: int | None = None,
     year_to: int | None = None,
     delay_seconds: float = 1.0,
-    subject_areas: list[str] | None = None
+    subject_areas: list[str] | None = None,
+    subject_keywords_de: list[str] | None = None,
+    page_size: int = 1000
 ) -> int:
     """
-    Download a batch of case law documents.
+    Download case law documents, paginating through ALL available results.
+
+    Fetches all case metadata via paginated SPARQL queries, then downloads
+    full texts for each case. If subject_keywords_de is provided, each
+    document's Stichwort is checked and only matching documents are saved.
 
     Args:
         output_dir: Directory to save documents
-        limit: Maximum number of documents
         year_from: Filter by start year
         year_to: Filter by end year
         delay_seconds: Delay between requests to be respectful to the server
-        subject_areas: Optional list of EuroVoc descriptor labels to filter by
+        subject_areas: Optional list of EuroVoc descriptor labels for SPARQL filtering
+        subject_keywords_de: Optional list of German keywords for Stichwort-based filtering
+        page_size: Number of results per SPARQL page
 
     Returns:
         Number of successfully downloaded documents
@@ -345,18 +545,22 @@ def download_case_law_batch(
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    subject_info = f" in {len(subject_areas)} subject areas" if subject_areas else ""
-    print(f"Fetching metadata for up to {limit} cases{subject_info}...")
-    metadata_list = get_case_law_metadata(
-        limit=limit,
+    print(f"Fetching all case metadata since {year_from or 'beginning'}...")
+    metadata_list = get_all_case_law_metadata(
         year_from=year_from,
         year_to=year_to,
-        subject_areas=subject_areas
+        subject_areas=subject_areas,
+        page_size=page_size
     )
 
-    print(f"Found {len(metadata_list)} cases. Downloading full texts...")
+    filter_info = ""
+    if subject_keywords_de:
+        filter_info = f" (filtering by {len(subject_keywords_de)} Stichwort keywords)"
+    print(f"Found {len(metadata_list)} total cases. Downloading full texts{filter_info}...")
 
     downloaded = 0
+    skipped = 0
+    already_local = 0
     for metadata in tqdm(metadata_list, desc="Downloading"):
         celex = metadata.get("celex", "")
         if not celex:
@@ -365,12 +569,17 @@ def download_case_law_batch(
         # Check if already downloaded
         output_file = output_dir / f"{celex.replace(':', '_')}.json"
         if output_file.exists():
-            downloaded += 1
+            already_local += 1
             continue
 
-        # Create document
+        # Create document (fetches text and extracts Stichwort keywords)
         doc = create_case_document(metadata)
         if doc:
+            # Apply Stichwort filter if configured
+            if subject_keywords_de and not matches_subject_filter(doc.keywords, subject_keywords_de):
+                skipped += 1
+                continue
+
             with open(output_file, 'w', encoding='utf-8') as f:
                 json.dump(doc.to_dict(), f, ensure_ascii=False, indent=2)
             downloaded += 1
@@ -378,8 +587,12 @@ def download_case_law_batch(
         # Respectful delay
         time.sleep(delay_seconds)
 
-    print(f"Downloaded {downloaded} documents to {output_dir}")
-    return downloaded
+    if skipped:
+        print(f"  Skipped {skipped} cases not matching subject keywords")
+    if already_local:
+        print(f"  {already_local} cases already downloaded")
+    print(f"Downloaded {downloaded} new documents to {output_dir}")
+    return downloaded + already_local
 
 
 def load_documents_from_disk(data_dir: Path) -> Iterator[CaseLawDocument]:
@@ -461,24 +674,47 @@ def get_latest_case_date(data_dir: Path) -> str | None:
     return latest_date
 
 
+def get_local_celex_numbers(data_dir: Path) -> set[str]:
+    """
+    Get the set of CELEX numbers already downloaded locally.
+
+    Returns:
+        Set of CELEX strings
+    """
+    celex_numbers = set()
+    for json_file in Path(data_dir).glob("*.json"):
+        if json_file.name == CHECKPOINT_FILE:
+            continue
+        # Filename format: 62023CJ0060.json (CELEX with ':' replaced by '_')
+        # Reverse the transformation to get the CELEX number
+        celex = json_file.stem.replace('_', ':')
+        celex_numbers.add(celex)
+    return celex_numbers
+
+
 def incremental_update(
     data_dir: Path,
     delay_seconds: float = 1.0,
     max_new_cases: int = 500,
     subject_areas: list[str] | None = None,
+    subject_keywords_de: list[str] | None = None,
     initial_year: int = 2018
 ) -> int:
     """
     Download only new cases since the last update.
 
-    This function checks the most recent case date in the local data
-    and downloads any newer cases from EUR-Lex.
+    On first run (no local data), fetches ALL cases since initial_year
+    via paginated SPARQL queries. On subsequent runs, fetches the most
+    recent metadata and downloads any cases not yet present locally
+    (identified by CELEX number, not by date — this ensures that cases
+    added to CELLAR with a delay are not missed).
 
     Args:
         data_dir: Directory containing case JSON files
         delay_seconds: Delay between requests
-        max_new_cases: Maximum number of new cases to download
-        subject_areas: Optional list of EuroVoc descriptor labels to filter by
+        max_new_cases: Number of recent cases to check per update
+        subject_areas: Optional list of EuroVoc descriptor labels for SPARQL filtering
+        subject_keywords_de: Optional list of German keywords for Stichwort filtering
         initial_year: Start year for initial download if no local data exists
 
     Returns:
@@ -488,31 +724,32 @@ def incremental_update(
     data_dir.mkdir(parents=True, exist_ok=True)
 
     checkpoint = load_checkpoint(data_dir)
-    latest_local_date = get_latest_case_date(data_dir)
+    local_celex = get_local_celex_numbers(data_dir)
+    has_data = len(local_celex) > 0
 
     print(f"Checking for new cases...")
-    if latest_local_date:
-        print(f"  Most recent local case: {latest_local_date}")
+    if has_data:
+        print(f"  {len(local_celex)} cases in local database")
     else:
-        print(f"  No local cases found - performing initial download")
+        print(f"  No local cases found - performing full initial download since {initial_year}")
         return download_case_law_batch(
             output_dir=data_dir,
-            limit=max_new_cases,
             year_from=initial_year,
             delay_seconds=delay_seconds,
-            subject_areas=subject_areas
+            subject_areas=subject_areas,
+            subject_keywords_de=subject_keywords_de
         )
 
-    # Fetch recent metadata to find new cases
+    # Fetch recent metadata and find cases not yet downloaded locally
     metadata_list = get_case_law_metadata(
         limit=max_new_cases,
         subject_areas=subject_areas
     )
 
-    # Filter to only cases newer than our latest
+    # Filter to cases we don't have yet (by CELEX number)
     new_cases = [
         m for m in metadata_list
-        if m.get('date', '') > latest_local_date
+        if m.get('celex', '') and m['celex'] not in local_celex
     ]
 
     if not new_cases:
@@ -522,6 +759,7 @@ def incremental_update(
     print(f"  Found {len(new_cases)} new cases. Downloading...")
 
     downloaded = 0
+    skipped = 0
     for metadata in tqdm(new_cases, desc="Downloading new cases"):
         celex = metadata.get("celex", "")
         if not celex:
@@ -533,6 +771,11 @@ def incremental_update(
 
         doc = create_case_document(metadata)
         if doc:
+            # Apply Stichwort filter if configured
+            if subject_keywords_de and not matches_subject_filter(doc.keywords, subject_keywords_de):
+                skipped += 1
+                continue
+
             with open(output_file, 'w', encoding='utf-8') as f:
                 json.dump(doc.to_dict(), f, ensure_ascii=False, indent=2)
             downloaded += 1
@@ -545,6 +788,8 @@ def incremental_update(
     checkpoint["total_downloaded"] = checkpoint.get("total_downloaded", 0) + downloaded
     save_checkpoint(data_dir, checkpoint)
 
+    if skipped:
+        print(f"  Skipped {skipped} cases not matching subject keywords")
     print(f"  Downloaded {downloaded} new cases.")
     return downloaded
 
@@ -553,33 +798,17 @@ def incremental_update(
 # LIVE SPARQL SEARCH (FALLBACK FOR OLDER CASES)
 # =============================================================================
 
-def live_search_cases(
+def _build_live_search_query(
     query_terms: list[str],
     year_from: int | None = None,
     year_to: int | None = None,
     limit: int = 10,
     subject_areas: list[str] | None = None
-) -> list[dict]:
-    """
-    Perform a live SPARQL search for cases matching the query terms.
-
-    This is used as a fallback when the local index doesn't have relevant results.
-    Searches in case titles and subjects.
-
-    Args:
-        query_terms: List of search terms (will be OR-combined)
-        year_from: Optional start year filter
-        year_to: Optional end year filter
-        limit: Maximum results
-        subject_areas: Optional list of EuroVoc descriptor labels to filter by
-
-    Returns:
-        List of case metadata dicts with basic info
-    """
+) -> str:
+    """Build a SPARQL query for live case search."""
     # Build FILTER for search terms (case-insensitive search in title)
     term_filters = []
     for term in query_terms:
-        # Escape special characters for SPARQL
         escaped = term.replace('"', '\\"').replace("'", "\\'")
         term_filters.append(f'CONTAINS(LCASE(?title), LCASE("{escaped}"))')
 
@@ -606,7 +835,7 @@ def live_search_cases(
         FILTER({" || ".join(conditions)})
         """
 
-    query = f"""
+    return f"""
     PREFIX cdm: <http://publications.europa.eu/ontology/cdm#>
     PREFIX skos: <http://www.w3.org/2004/02/skos/core#>
 
@@ -630,6 +859,9 @@ def live_search_cases(
     LIMIT {limit}
     """
 
+
+def _execute_live_search_query(query: str) -> list[dict]:
+    """Execute a live search SPARQL query and return results."""
     sparql = SPARQLWrapper(SPARQL_ENDPOINT)
     sparql.setQuery(query)
     sparql.setReturnFormat(JSON)
@@ -651,6 +883,45 @@ def live_search_cases(
     except Exception as e:
         print(f"Live SPARQL search failed: {e}")
         return []
+
+
+def live_search_cases(
+    query_terms: list[str],
+    year_from: int | None = None,
+    year_to: int | None = None,
+    limit: int = 10,
+    subject_areas: list[str] | None = None
+) -> list[dict]:
+    """
+    Perform a live SPARQL search for cases matching the query terms.
+
+    This is used as a fallback when the local index doesn't have relevant results.
+    Searches in case titles and subjects.
+
+    If subject_areas are provided but the query returns 0 results (EuroVoc
+    descriptors are often not available for case-law in CELLAR), the query
+    is automatically retried without the subject area filter.
+
+    Args:
+        query_terms: List of search terms (will be OR-combined)
+        year_from: Optional start year filter
+        year_to: Optional end year filter
+        limit: Maximum results
+        subject_areas: Optional list of EuroVoc descriptor labels to filter by
+
+    Returns:
+        List of case metadata dicts with basic info
+    """
+    # Try with subject area filter first
+    if subject_areas:
+        query = _build_live_search_query(query_terms, year_from, year_to, limit, subject_areas)
+        cases = _execute_live_search_query(query)
+        if cases:
+            return cases
+
+    # Retry without subject area filter
+    query = _build_live_search_query(query_terms, year_from, year_to, limit, subject_areas=None)
+    return _execute_live_search_query(query)
 
 
 def fetch_case_on_demand(celex: str) -> CaseLawDocument | None:
@@ -715,7 +986,8 @@ if __name__ == "__main__":
     incremental_update(
         data_dir=data_dir,
         delay_seconds=cfg.download_delay,
-        max_new_cases=cfg.initial_limit,
+        max_new_cases=cfg.update_limit,
         subject_areas=cfg.subject_areas,
+        subject_keywords_de=cfg.subject_keywords_de,
         initial_year=cfg.initial_year
     )

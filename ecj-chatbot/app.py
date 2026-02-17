@@ -7,12 +7,22 @@ Run with: streamlit run app.py
 """
 
 import os
+import sys
 from pathlib import Path
+
+# Check Python version compatibility before importing dependencies
+if sys.version_info >= (3, 14):
+    print(
+        "WARNING: Python 3.14+ is not yet supported by chromadb.\n"
+        "Please use Python 3.11-3.13.\n"
+        "You can install Python 3.13 from https://www.python.org/downloads/\n"
+        "Then run: py -3.13 -m streamlit run app.py"
+    )
+    sys.exit(1)
 
 import streamlit as st
 
 # Add src to path
-import sys
 sys.path.insert(0, str(Path(__file__).parent / "src"))
 
 from config import get_config, set_data_dir, Config
@@ -66,15 +76,16 @@ def initialize_data_and_index(auto_update: bool = True) -> bool:
     if not has_data:
         initial_year = config.initial_year
         subject_areas = config.subject_areas
-        area_info = f" in {len(subject_areas)} Rechtsgebieten" if subject_areas else ""
-        st.info(f"Erste Initialisierung: Lade EuGH-Entscheidungen seit {initial_year}{area_info}...")
-        with st.spinner("Lade Daten von EUR-Lex..."):
+        subject_keywords = config.subject_keywords_de
+        kw_info = f" (Stichwort-Filter: {len(subject_keywords)} Begriffe)" if subject_keywords else ""
+        st.info(f"Erste Initialisierung: Lade ALLE EuGH-Entscheidungen seit {initial_year}{kw_info}...")
+        with st.spinner("Lade Daten von EUR-Lex (paginiert, kann einige Minuten dauern)..."):
             downloaded = download_case_law_batch(
                 output_dir=cases_dir,
-                limit=config.initial_limit,
                 year_from=initial_year,
                 delay_seconds=config.download_delay,
-                subject_areas=subject_areas
+                subject_areas=subject_areas,
+                subject_keywords_de=subject_keywords
             )
             st.success(f"{downloaded} Entscheidungen heruntergeladen.")
 
@@ -97,6 +108,7 @@ def initialize_data_and_index(auto_update: bool = True) -> bool:
                 delay_seconds=config.download_delay,
                 max_new_cases=config.update_limit,
                 subject_areas=config.subject_areas,
+                subject_keywords_de=config.subject_keywords_de,
                 initial_year=config.initial_year
             )
 
@@ -259,6 +271,7 @@ def main():
                     delay_seconds=config.download_delay,
                     max_new_cases=config.update_limit,
                     subject_areas=config.subject_areas,
+                    subject_keywords_de=config.subject_keywords_de,
                     initial_year=config.initial_year
                 )
             if new_cases > 0:

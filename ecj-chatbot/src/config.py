@@ -38,13 +38,12 @@ class Config:
 
     # Download settings
     initial_year: int = 2018
-    initial_limit: int = 1000
-    update_limit: int = 100
+    update_limit: int = 500  # Max cases to check per incremental update
     download_delay: float = 1.0
+    sparql_page_size: int = 1000  # Results per SPARQL page for initial download
 
     # Subject area filter: EuroVoc descriptor labels (English)
-    # Cases must match at least one of these descriptors to be included.
-    # Covers: employment/social policy, data protection/AI, discrimination/equal treatment
+    # Used for SPARQL EuroVoc filtering (works for legislation, often not for case-law)
     subject_areas: list[str] = field(default_factory=lambda: [
         # Employment / Social Policy / Workers' Rights
         "social policy",
@@ -74,6 +73,55 @@ class Config:
         "sex discrimination",
         "racial discrimination",
         "fundamental rights",
+    ])
+
+    # Stichwort filter: German keywords matched against the "Stichwort" section
+    # in the header of each EuGH decision. A case is included if any of these
+    # terms appear in its Stichwort (case-insensitive substring match).
+    # This is the primary filter for case-law, since EuroVoc is unreliable there.
+    subject_keywords_de: list[str] = field(default_factory=lambda: [
+        # Arbeitsrecht / Sozialpolitik / Arbeitnehmerrechte
+        "Sozialpolitik",
+        "Arbeitnehmer",
+        "Arbeitsvertrag",
+        "Arbeitszeit",
+        "Arbeitsrecht",
+        "Arbeitsbedingungen",
+        "Beschäftigung",
+        "Entlassung",
+        "Kündigung",
+        "Betriebsübergang",
+        "Leiharbeit",
+        "Teilzeitarbeit",
+        "befristeter Arbeitsvertrag",
+        "Entsendung von Arbeitnehmern",
+        "entsandte Arbeitnehmer",
+        "Wanderarbeitnehmer",
+        "Freizügigkeit der Arbeitnehmer",
+        "soziale Sicherheit",
+        "Sozialversicherung",
+        "Elternurlaub",
+        "Jahresurlaub",
+        "Massenentlassung",
+        "Unterrichtung und Anhörung",
+        # Datenschutz / Privatsphäre / KI
+        "Datenschutz",
+        "personenbezogene Daten",
+        "Schutz der Privatsphäre",
+        "Vorratsdatenspeicherung",
+        "Datenübermittlung",
+        "künstliche Intelligenz",
+        # Diskriminierung / Gleichbehandlung / Grundrechte
+        "Diskriminierung",
+        "Gleichbehandlung",
+        "Gleichstellung",
+        "Alter",
+        "Geschlecht",
+        "Behinderung",
+        "Religion",
+        "sexuelle Ausrichtung",
+        "Grundrechte",
+        "Charta der Grundrechte",
     ])
 
     # Search settings

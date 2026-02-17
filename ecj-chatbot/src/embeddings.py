@@ -8,8 +8,21 @@ import json
 from pathlib import Path
 from typing import Iterator
 
-import chromadb
-from chromadb.config import Settings
+import sys
+
+try:
+    import chromadb
+    from chromadb.config import Settings
+except Exception as e:
+    if "unable to infer type" in str(e) or "ConfigError" in str(e):
+        print(
+            f"\nERROR: chromadb is incompatible with Python {sys.version_info.major}.{sys.version_info.minor}.\n"
+            "This is a known pydantic/chromadb compatibility issue.\n"
+            "Please use Python 3.11-3.13, or upgrade chromadb:\n"
+            "  pip install --upgrade chromadb\n"
+        )
+    raise
+
 from sentence_transformers import SentenceTransformer
 from tqdm import tqdm
 
