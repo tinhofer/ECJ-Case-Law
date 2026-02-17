@@ -49,9 +49,21 @@ class TestConfigDefaults:
         cfg = Config()
         assert cfg.initial_year == 2018
 
-    def test_default_initial_limit_is_1000(self):
+    def test_default_update_limit(self):
         cfg = Config()
-        assert cfg.initial_limit == 1000
+        assert cfg.update_limit == 500
+
+    def test_default_sparql_page_size(self):
+        cfg = Config()
+        assert cfg.sparql_page_size == 1000
+
+    def test_default_subject_keywords_de(self):
+        cfg = Config()
+        assert isinstance(cfg.subject_keywords_de, list)
+        assert len(cfg.subject_keywords_de) > 0
+        assert "Sozialpolitik" in cfg.subject_keywords_de
+        assert "Datenschutz" in cfg.subject_keywords_de
+        assert "Diskriminierung" in cfg.subject_keywords_de
 
 
 class TestEnsureDirectories:

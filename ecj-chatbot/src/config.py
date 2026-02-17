@@ -38,9 +38,9 @@ class Config:
 
     # Download settings
     initial_year: int = 2018
-    initial_limit: int = 1000
-    update_limit: int = 100
+    update_limit: int = 500  # Max cases to check per incremental update
     download_delay: float = 1.0
+    sparql_page_size: int = 1000  # Results per SPARQL page for initial download
 
     # Subject area filter: EuroVoc descriptor labels (English)
     # Used for SPARQL EuroVoc filtering (works for legislation, often not for case-law)

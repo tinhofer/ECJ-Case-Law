@@ -78,11 +78,10 @@ def initialize_data_and_index(auto_update: bool = True) -> bool:
         subject_areas = config.subject_areas
         subject_keywords = config.subject_keywords_de
         kw_info = f" (Stichwort-Filter: {len(subject_keywords)} Begriffe)" if subject_keywords else ""
-        st.info(f"Erste Initialisierung: Lade EuGH-Entscheidungen seit {initial_year}{kw_info}...")
-        with st.spinner("Lade Daten von EUR-Lex..."):
+        st.info(f"Erste Initialisierung: Lade ALLE EuGH-Entscheidungen seit {initial_year}{kw_info}...")
+        with st.spinner("Lade Daten von EUR-Lex (paginiert, kann einige Minuten dauern)..."):
             downloaded = download_case_law_batch(
                 output_dir=cases_dir,
-                limit=config.initial_limit,
                 year_from=initial_year,
                 delay_seconds=config.download_delay,
                 subject_areas=subject_areas,
