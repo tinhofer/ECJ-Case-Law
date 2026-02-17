@@ -76,15 +76,17 @@ def initialize_data_and_index(auto_update: bool = True) -> bool:
     if not has_data:
         initial_year = config.initial_year
         subject_areas = config.subject_areas
-        area_info = f" in {len(subject_areas)} Rechtsgebieten" if subject_areas else ""
-        st.info(f"Erste Initialisierung: Lade EuGH-Entscheidungen seit {initial_year}{area_info}...")
+        subject_keywords = config.subject_keywords_de
+        kw_info = f" (Stichwort-Filter: {len(subject_keywords)} Begriffe)" if subject_keywords else ""
+        st.info(f"Erste Initialisierung: Lade EuGH-Entscheidungen seit {initial_year}{kw_info}...")
         with st.spinner("Lade Daten von EUR-Lex..."):
             downloaded = download_case_law_batch(
                 output_dir=cases_dir,
                 limit=config.initial_limit,
                 year_from=initial_year,
                 delay_seconds=config.download_delay,
-                subject_areas=subject_areas
+                subject_areas=subject_areas,
+                subject_keywords_de=subject_keywords
             )
             st.success(f"{downloaded} Entscheidungen heruntergeladen.")
 
@@ -107,6 +109,7 @@ def initialize_data_and_index(auto_update: bool = True) -> bool:
                 delay_seconds=config.download_delay,
                 max_new_cases=config.update_limit,
                 subject_areas=config.subject_areas,
+                subject_keywords_de=config.subject_keywords_de,
                 initial_year=config.initial_year
             )
 
@@ -269,6 +272,7 @@ def main():
                     delay_seconds=config.download_delay,
                     max_new_cases=config.update_limit,
                     subject_areas=config.subject_areas,
+                    subject_keywords_de=config.subject_keywords_de,
                     initial_year=config.initial_year
                 )
             if new_cases > 0:
