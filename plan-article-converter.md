@@ -28,9 +28,9 @@ Auto-detect format by file extension.
 
 ## 3. What to Remove / Transform
 
-### 3.1 Remove entirely
-- **Footnotes and endnotes** (both numbered and symbolic)
-- **Footnote reference markers** in body text (superscript numbers like ¹²³)
+### 3.1 Remove from body, append at end
+- **Footnotes and endnotes** — remove from their original position and **append as a numbered "Notes" section at the end** of the document (without reference markers in the body text)
+- **Footnote reference markers** in body text (superscript numbers like ¹²³) — remove
 - **Page numbers**, running headers/footers
 - **Table of contents**
 - **Bibliography / references section** at the end
@@ -69,7 +69,7 @@ A configurable dictionary, at minimum covering:
 User-extensible via a YAML/JSON config file.
 
 ### 3.3 Normalize for natural speech
-- **Case citations** like `C-123/45` → "Case C 123 slash 45" (or configurable)
+- **Case citations** like `C-123/45` → spell out as "Case C 123 slash 45"
 - **Section symbols**: `§ 12` → "Section 12"
 - **Roman numerals** in headings → Arabic (e.g. "III." → "3.")
 - **Ordinals**: 1st, 2nd, 3rd → leave as-is (TTS handles these)
@@ -77,7 +77,7 @@ User-extensible via a YAML/JSON config file.
 - **Dehyphenation**: rejoin words split across line breaks ("juris-\nprudence" → "jurisprudence")
 - **Whitespace normalization**: collapse multiple spaces, fix broken paragraphs
 - **Em/en dashes**: `—` / `–` → " — " (with spaces, so TTS pauses)
-- **Parenthetical citations** like `(Smith 2020, p. 45)` → remove entirely
+- **Parenthetical citations** like `(Smith 2020, p. 45)` → remove entirely (author name included)
 - **Quoted text**: keep the quote, optionally add "quote" / "end quote" markers
 
 ### 3.4 Structural cleanup
@@ -99,12 +99,22 @@ date: 2024-03-15
 source: "Journal Name, Vol. X"
 converted: 2026-02-24
 language: en
+tags: [EU-law, CJEU, fundamental-rights]
 ---
 
 # Original Article Title
 
 [Clean, TTS-optimized body text here...]
+
+---
+
+## Notes
+
+1. First footnote content, fully expanded for TTS.
+2. Second footnote content.
 ```
+
+- **Tags** are auto-generated from article keywords/topics using simple keyword extraction (e.g. TF-IDF or a curated legal-domain keyword list) and stored in the YAML frontmatter for Obsidian filtering/search.
 
 - YAML frontmatter for Obsidian metadata/search
 - Single `.md` file per article
@@ -153,7 +163,8 @@ article-to-TTS-converter/
 │       ├── cleaner.py          # Footnote/citation/URL removal
 │       ├── abbreviations.py    # Abbreviation expansion engine
 │       ├── normalizer.py       # Dehyphenation, whitespace, dates, symbols
-│       ├── markdown_writer.py  # Obsidian-ready .md output
+│       ├── tag_extractor.py    # Keyword extraction for Obsidian tags
+│       ├── markdown_writer.py  # Obsidian-ready .md output (body + Notes section)
 │       └── config.py           # Config loading
 ├── config/
 │   ├── default.yaml            # Default settings
@@ -171,27 +182,33 @@ article-to-TTS-converter/
 ## 8. Processing Pipeline
 
 ```
-Input (PDF/Word)
+Input (PDF/Word) — or batch: folder / glob pattern
       │
       ▼
 ┌─────────────────┐
 │  1. Extract      │  pymupdf / python-docx
-│     raw text     │  (preserve paragraph structure)
+│     raw text     │  (preserve paragraph structure + footnotes separately)
 ├─────────────────┤
 │  2. Dehyphenate  │  rejoin line-break-split words
 ├─────────────────┤
 │  3. Detect       │  langdetect → pick abbreviation dict
 │     language     │
 ├─────────────────┤
-│  4. Remove       │  footnotes, bibliography, page numbers,
-│     clutter      │  TOC, figure refs, URLs, citations
+│  4. Remove       │  bibliography, page numbers, TOC,
+│     clutter      │  figure refs, URLs, parenthetical citations
 ├─────────────────┤
-│  5. Expand       │  abbreviations, symbols, case refs
-│     abbreviations│
+│  5. Extract      │  separate footnotes from body, strip markers
+│     footnotes    │  from body text, keep footnote content for appending
 ├─────────────────┤
-│  6. Normalize    │  whitespace, dashes, dates, tables
+│  6. Expand       │  abbreviations, symbols,
+│     abbreviations│  case refs (C-123/45 → "Case C 123 slash 45")
 ├─────────────────┤
-│  7. Write .md    │  YAML frontmatter + clean body
+│  7. Normalize    │  whitespace, dashes, dates, tables
+├─────────────────┤
+│  8. Extract tags │  keyword extraction for Obsidian tags
+├─────────────────┤
+│  9. Write .md    │  YAML frontmatter (incl. tags) + clean body
+│                  │  + appended "Notes" section with footnote content
 └─────────────────┘
       │
       ▼
@@ -215,8 +232,11 @@ article2tts aufsatz.docx --lang de
 # Custom config
 article2tts paper.pdf --config my-config.yaml
 
-# Keep footnotes inline (instead of removing)
-article2tts paper.pdf --keep-footnotes
+# Batch mode — convert all PDFs/docx in a folder
+article2tts ~/Downloads/papers/ -o ~/Obsidian/Articles/
+
+# Batch mode with glob pattern
+article2tts ~/Downloads/papers/*.pdf -o ~/Obsidian/Articles/
 ```
 
 ---
@@ -232,10 +252,10 @@ article2tts paper.pdf --keep-footnotes
 
 ---
 
-## 11. Open Questions for Discussion
+## 11. Design Decisions (Resolved)
 
-1. **Footnotes: remove or inline?** Default is remove, but `--keep-footnotes` could inline them in parentheses. Which do you prefer as default?
-2. **Parenthetical citations**: Remove `(Smith 2020)` entirely, or keep author name and remove year/page?
-3. **Case citations**: `C-123/45` — spell out as "Case C 123 slash 45", or just "Case C-123/45" and let TTS handle it?
-4. **Batch mode**: Process an entire folder of PDFs at once? (Easy to add.)
-5. **Obsidian tags**: Auto-generate tags from keywords? (e.g. `tags: [EU-law, CJEU, fundamental-rights]`)
+1. **Footnotes** → Append content as a "Notes" section at the end of the document; remove markers from body text.
+2. **Parenthetical citations** → Remove entirely (including author name).
+3. **Case citations** → Spell out for TTS (e.g. `C-123/45` → "Case C 123 slash 45").
+4. **Batch mode** → Yes. Accept a folder path or glob pattern to convert multiple files at once.
+5. **Obsidian tags** → Yes. Auto-generate tags from keywords and store in YAML frontmatter.
