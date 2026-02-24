@@ -16,6 +16,7 @@ from article2tts.extractor_pdf import ExtractionResult, extract_pdf
 from article2tts.markdown_writer import generate_filename, write_markdown
 from article2tts.normalizer import normalize_all
 from article2tts.tag_extractor import extract_tags
+from article2tts.url_fetcher import download_pdf, extract_urls_from_markdown
 
 _SUPPORTED_EXTENSIONS = {".pdf", ".docx"}
 
@@ -47,7 +48,9 @@ def main(
 ) -> None:
     """Convert academic articles (PDF/Word) to TTS-friendly Markdown.
 
-    INPUT_PATH can be one or more files, a directory, or a glob pattern.
+    INPUT_PATH can be one or more files, a directory, a glob pattern,
+    an Obsidian .md file (extracts PDF links and downloads them),
+    or a direct URL to a PDF.
 
     \b
     Examples:
@@ -55,16 +58,18 @@ def main(
         article2tts paper.pdf -o ~/Obsidian/Articles/
         article2tts ~/Downloads/papers/
         article2tts ~/Downloads/papers/*.pdf
+        article2tts reading-list.md
+        article2tts https://example.com/paper.pdf
     """
     cfg = Config.load(config_path)
 
     if output_dir:
         cfg.output_dir = str(Path(output_dir).expanduser())
 
-    # Resolve input paths: expand directories and globs
-    files = _resolve_inputs(input_path)
+    # Resolve input paths: expand directories, globs, .md files, and URLs
+    files, source_map = _resolve_inputs(input_path)
     if not files:
-        click.echo("No supported files found (.pdf, .docx).", err=True)
+        click.echo("No supported files found (.pdf, .docx, .md with links, or URLs).", err=True)
         sys.exit(1)
 
     click.echo(f"Converting {len(files)} file(s)...")
@@ -72,7 +77,9 @@ def main(
     success = 0
     for file_path in files:
         try:
-            out = convert_file(file_path, cfg, forced_language=lang)
+            # Pass source URL as metadata if the file was downloaded
+            extra_metadata = source_map.get(str(file_path), {})
+            out = convert_file(file_path, cfg, forced_language=lang, extra_metadata=extra_metadata)
             click.echo(f"  OK: {file_path.name} -> {out.name}")
             success += 1
         except Exception as e:
@@ -86,11 +93,16 @@ def convert_file(
     cfg: Config,
     *,
     forced_language: str | None = None,
+    extra_metadata: dict[str, str] | None = None,
 ) -> Path:
     """Run the full conversion pipeline on a single file."""
 
     # 1. Extract raw text
     result = _extract(file_path)
+
+    # Merge extra metadata (e.g. source URL from download)
+    if extra_metadata:
+        result.metadata.update(extra_metadata)
 
     # 2. Detect language
     language = forced_language or cfg.language
@@ -170,25 +182,70 @@ def _title_from_filename(path: Path) -> str:
     return path.stem.replace("-", " ").replace("_", " ").title()
 
 
-def _resolve_inputs(paths: tuple[str, ...]) -> list[Path]:
-    """Resolve input paths to a flat list of supported files."""
+def _resolve_inputs(paths: tuple[str, ...]) -> tuple[list[Path], dict[str, dict[str, str]]]:
+    """Resolve input paths to a flat list of supported files.
+
+    Handles:
+    - Local PDF/DOCX files
+    - Directories (all supported files inside)
+    - Glob patterns
+    - Obsidian .md files (extracts PDF links and downloads them)
+    - Direct URLs to PDFs
+
+    Returns (files, source_map) where source_map maps file paths to
+    extra metadata like the source URL.
+    """
     files: list[Path] = []
+    source_map: dict[str, dict[str, str]] = {}
+
     for pattern in paths:
+        # Check if it's a URL
+        if pattern.startswith("http://") or pattern.startswith("https://"):
+            try:
+                click.echo(f"  Downloading {pattern}...")
+                pdf_path = download_pdf(pattern)
+                files.append(pdf_path)
+                source_map[str(pdf_path)] = {"source": pattern}
+            except Exception as e:
+                click.echo(f"  FAIL downloading {pattern}: {e}", err=True)
+            continue
+
         p = Path(pattern).expanduser()
+
+        # Check if it's an Obsidian .md file
+        if p.exists() and p.suffix.lower() == ".md":
+            click.echo(f"  Scanning {p.name} for PDF links...")
+            url_entries = extract_urls_from_markdown(p)
+            if not url_entries:
+                click.echo(f"  No PDF links found in {p.name}.", err=True)
+                continue
+            click.echo(f"  Found {len(url_entries)} PDF link(s).")
+            for entry in url_entries:
+                try:
+                    click.echo(f"    Downloading {entry['url']}...")
+                    pdf_path = download_pdf(entry["url"])
+                    files.append(pdf_path)
+                    meta = {"source": entry["url"]}
+                    if entry.get("title"):
+                        meta["link_title"] = entry["title"]
+                    source_map[str(pdf_path)] = meta
+                except Exception as e:
+                    click.echo(f"    FAIL: {entry['url']}: {e}", err=True)
+            continue
+
         if p.is_dir():
-            # All supported files in directory
             for ext in _SUPPORTED_EXTENSIONS:
                 files.extend(sorted(p.glob(f"*{ext}")))
         elif p.exists() and p.suffix.lower() in _SUPPORTED_EXTENSIONS:
             files.append(p)
         else:
-            # Try glob expansion
             expanded = glob.glob(pattern)
             for f in sorted(expanded):
                 fp = Path(f)
                 if fp.suffix.lower() in _SUPPORTED_EXTENSIONS:
                     files.append(fp)
-    return files
+
+    return files, source_map
 
 
 if __name__ == "__main__":
