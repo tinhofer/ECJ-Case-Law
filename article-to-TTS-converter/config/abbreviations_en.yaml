@@ -1,0 +1,60 @@
+# English abbreviations for TTS expansion
+# Format: abbreviation: expansion
+# Abbreviations with trailing dots are matched with the dot included.
+
+# General academic
+"cf.": "compare"
+"e.g.": "for example"
+"i.e.": "that is"
+"et al.": "and others"
+"ibid.": "same source"
+"etc.": "et cetera"
+"approx.": "approximately"
+"incl.": "including"
+"esp.": "especially"
+"viz.": "namely"
+
+# References
+"no.": "number"
+"nos.": "numbers"
+"ed.": "editor"
+"eds.": "editors"
+"vol.": "volume"
+"vols.": "volumes"
+"p.": "page"
+"pp.": "pages"
+"fn.": "footnote"
+"fns.": "footnotes"
+"ch.": "chapter"
+"chs.": "chapters"
+"sec.": "section"
+"secs.": "sections"
+"para.": "paragraph"
+"paras.": "paragraphs"
+"Art.": "Article"
+"Arts.": "Articles"
+"Reg.": "Regulation"
+
+# Symbols
+"§": "Section"
+"§§": "Sections"
+
+# EU / Legal institutions
+"ECJ": "European Court of Justice"
+"CJEU": "Court of Justice of the European Union"
+"AG": "Advocate General"
+"EU": "European Union"
+"EC": "European Community"
+"ECHR": "European Convention on Human Rights"
+"ECtHR": "European Court of Human Rights"
+"CFI": "Court of First Instance"
+"GC": "General Court"
+
+# Treaties
+"TFEU": "Treaty on the Functioning of the European Union"
+"TEU": "Treaty on European Union"
+"TEC": "Treaty establishing the European Community"
+
+# Legislation
+"GDPR": "General Data Protection Regulation"
+"UCPD": "Unfair Commercial Practices Directive"

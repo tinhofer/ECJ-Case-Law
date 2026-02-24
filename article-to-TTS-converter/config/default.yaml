@@ -1,0 +1,7 @@
+output_dir: "."
+language: auto            # auto | en | de | fr
+remove_bibliography: true
+remove_urls: true
+remove_citations: true    # parenthetical citations like (Smith 2020)
+expand_abbreviations: true
+custom_abbreviations: {}  # user additions, e.g. GDPR: General Data Protection Regulation
