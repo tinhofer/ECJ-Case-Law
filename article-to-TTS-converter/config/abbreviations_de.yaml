@@ -1,0 +1,84 @@
+# German abbreviations for TTS expansion
+# Format: abbreviation: expansion
+
+# General academic
+"vgl.": "vergleiche"
+"z.B.": "zum Beispiel"
+"d.h.": "das heißt"
+"u.a.": "unter anderem"
+"sog.": "sogenannt"
+"bzgl.": "bezüglich"
+"bzw.": "beziehungsweise"
+"ca.": "circa"
+"etc.": "et cetera"
+"evtl.": "eventuell"
+"ggf.": "gegebenenfalls"
+"grds.": "grundsätzlich"
+"insb.": "insbesondere"
+"m.E.": "meines Erachtens"
+"m.w.N.": "mit weiteren Nachweisen"
+"s.o.": "siehe oben"
+"s.u.": "siehe unten"
+"u.U.": "unter Umständen"
+
+# References
+"Nr.": "Nummer"
+"Nrn.": "Nummern"
+"Hrsg.": "Herausgeber"
+"Bd.": "Band"
+"Bde.": "Bände"
+"S.": "Seite"
+"Fn.": "Fußnote"
+"Kap.": "Kapitel"
+"Abs.": "Absatz"
+"Art.": "Artikel"
+"Rn.": "Randnummer"
+"Rz.": "Randziffer"
+"Aufl.": "Auflage"
+"Ziff.": "Ziffer"
+"lit.": "litera"
+"UAbs.": "Unterabsatz"
+
+# Symbols
+"§": "Paragraph"
+"§§": "Paragraphen"
+
+# EU / Legal institutions
+"EuGH": "Europäischer Gerichtshof"
+"EuG": "Gericht der Europäischen Union"
+"GA": "Generalanwalt"
+"EU": "Europäische Union"
+"EG": "Europäische Gemeinschaft"
+"EMRK": "Europäische Menschenrechtskonvention"
+"EGMR": "Europäischer Gerichtshof für Menschenrechte"
+
+# Treaties
+"AEUV": "Vertrag über die Arbeitsweise der Europäischen Union"
+"EUV": "Vertrag über die Europäische Union"
+"EGV": "Vertrag zur Gründung der Europäischen Gemeinschaft"
+"GRCh": "Charta der Grundrechte der Europäischen Union"
+
+# German law
+"GG": "Grundgesetz"
+"BGB": "Bürgerliches Gesetzbuch"
+"StGB": "Strafgesetzbuch"
+"ZPO": "Zivilprozessordnung"
+"VwGO": "Verwaltungsgerichtsordnung"
+"BVerfG": "Bundesverfassungsgericht"
+"BGH": "Bundesgerichtshof"
+"BVerwG": "Bundesverwaltungsgericht"
+"BAG": "Bundesarbeitsgericht"
+
+# Austrian law
+"B-VG": "Bundes-Verfassungsgesetz"
+"VfGH": "Verfassungsgerichtshof"
+"VwGH": "Verwaltungsgerichtshof"
+"OGH": "Oberster Gerichtshof"
+"ABGB": "Allgemeines bürgerliches Gesetzbuch"
+
+# Legislation
+"DS-GVO": "Datenschutz-Grundverordnung"
+"DSGVO": "Datenschutz-Grundverordnung"
+"UWG": "Gesetz gegen den unlauteren Wettbewerb"
+"RL": "Richtlinie"
+"VO": "Verordnung"

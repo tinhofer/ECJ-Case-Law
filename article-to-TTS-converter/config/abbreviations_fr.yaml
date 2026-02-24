@@ -1,0 +1,45 @@
+# French abbreviations for TTS expansion
+# Format: abbreviation: expansion
+
+# General academic
+"cf.": "comparer"
+"p. ex.": "par exemple"
+"c.-à-d.": "c'est-à-dire"
+"etc.": "et cætera"
+"env.": "environ"
+"not.": "notamment"
+"éd.": "édition"
+"dir.": "directeur"
+
+# References
+"n°": "numéro"
+"nos": "numéros"
+"p.": "page"
+"pp.": "pages"
+"art.": "article"
+"al.": "alinéa"
+"ch.": "chapitre"
+"sect.": "section"
+"vol.": "volume"
+"t.": "tome"
+
+# Symbols
+"§": "paragraphe"
+"§§": "paragraphes"
+
+# EU / Legal institutions
+"CJUE": "Cour de justice de l'Union européenne"
+"CJCE": "Cour de justice des Communautés européennes"
+"TPI": "Tribunal de première instance"
+"UE": "Union européenne"
+"CE": "Communauté européenne"
+"CEDH": "Convention européenne des droits de l'homme"
+"CourEDH": "Cour européenne des droits de l'homme"
+
+# Treaties
+"TFUE": "Traité sur le fonctionnement de l'Union européenne"
+"TUE": "Traité sur l'Union européenne"
+"TCE": "Traité instituant la Communauté européenne"
+
+# Legislation
+"RGPD": "Règlement général sur la protection des données"
