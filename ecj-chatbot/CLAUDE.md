@@ -174,6 +174,34 @@ gh pr create --title "feat: EuGH Case Law Chatbot" --body "..."
 1. **ChromaDB nicht sync-safe**: Index muss lokal erstellt werden
 2. **EUR-Lex Rate-Limiting**: Download mit 1s Delay zwischen Requests
 3. **Keine Offline-Suche in alten Fällen**: Live-Fallback benötigt Internet
+4. **Python 3.14 nicht unterstützt**: ChromaDB erfordert Python 3.11–3.13
+
+## Bekanntes Problem: EUR-Lex SPARQL Endpoint (März 2026)
+
+**Status:** SPARQL-Endpoint liefert seit ~16. März 2026 leere Ergebnisse.
+
+**Ursache:** Die EU Publications Office hat den CELLAR-Datenbankserver am 13.–14. März 2026
+von **Virtuoso 7 auf Virtuoso 8** migriert. Seitdem liefert der SPARQL-Endpoint
+(`https://publications.europa.eu/webapi/rdf/sparql`) keine CDM-Daten mehr zurück —
+weder `cdm:case-law` noch `cdm:resource_legal_celex` liefern Ergebnisse.
+
+**Auswirkungen:**
+- Erstdownload von Fällen schlägt fehl (0 Ergebnisse)
+- Live-Fallback-Suche findet keine Fälle
+- Der Endpoint selbst ist erreichbar (generische `SELECT ?s WHERE { ?s ?p ?o }` funktioniert)
+- Nur CDM-spezifische Daten fehlen (auch über Named Graphs nicht auffindbar)
+
+**Diagnose-Test:**
+```python
+python -c "from SPARQLWrapper import SPARQLWrapper, JSON; s=SPARQLWrapper('https://publications.europa.eu/webapi/rdf/sparql'); s.setQuery('PREFIX cdm: <http://publications.europa.eu/ontology/cdm#> SELECT ?celex WHERE { ?w a cdm:case-law . ?w cdm:resource_legal_celex ?celex } LIMIT 3'); s.setReturnFormat(JSON); r=s.query().convert(); print(len(r['results']['bindings']), 'results')"
+```
+→ Wenn `3 results` zurückkommen, ist der Endpoint wieder funktionsfähig.
+
+**Kontakt:** op-cellar@ec.europa.eu
+
+**Referenzen:**
+- [Cellar data - Publications Office of the EU](https://op.europa.eu/en/web/cellar/cellar-data)
+- [Technical information - EUR-Lex](https://eur-lex.europa.eu/eli-register/technical_information.html)
 
 ## Kontext für neue Sessions
 
