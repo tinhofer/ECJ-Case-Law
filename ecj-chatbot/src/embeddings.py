@@ -26,6 +26,11 @@ except Exception as e:
 from sentence_transformers import SentenceTransformer
 from tqdm import tqdm
 
+
+class EmbeddingModelError(RuntimeError):
+    """Raised when the sentence-transformer embedding model cannot be loaded."""
+    pass
+
 from data_acquisition import CaseLawDocument, load_documents_from_disk
 
 
@@ -70,7 +75,24 @@ class CaseLawVectorStore:
 
         # Initialize embedding model
         print(f"Loading embedding model: {embedding_model}")
-        self.embedding_model = SentenceTransformer(embedding_model)
+        try:
+            self.embedding_model = SentenceTransformer(embedding_model)
+        except Exception as e:
+            msg = str(e)
+            if "ProxyError" in msg or "403" in msg or "ConnectionError" in msg:
+                raise EmbeddingModelError(
+                    f"Cannot download embedding model '{embedding_model}'. "
+                    f"Network access to HuggingFace Hub is blocked.\n\n"
+                    f"To fix this, either:\n"
+                    f"  1. Allow network access to huggingface.co\n"
+                    f"  2. Pre-download the model and set HF_HOME to the cache dir\n"
+                    f"  3. Use a local model path via ECJ_EMBEDDING_MODEL env var\n\n"
+                    f"Original error: {e}"
+                ) from e
+            raise EmbeddingModelError(
+                f"Failed to load embedding model '{embedding_model}': {e}\n\n"
+                f"Try: pip install -U sentence-transformers"
+            ) from e
 
         # Initialize ChromaDB
         self.client = chromadb.PersistentClient(

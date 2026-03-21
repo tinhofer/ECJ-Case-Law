@@ -27,7 +27,7 @@ sys.path.insert(0, str(Path(__file__).parent / "src"))
 
 from config import get_config, set_data_dir, Config
 from rag_pipeline import create_chatbot, EuGHChatbot
-from embeddings import CaseLawVectorStore, build_index_from_data_dir
+from embeddings import CaseLawVectorStore, build_index_from_data_dir, EmbeddingModelError
 from data_acquisition import (
     incremental_update,
     load_checkpoint,
@@ -157,6 +157,15 @@ def init_chatbot(auto_update: bool = False) -> EuGHChatbot | None:
             st.session_state.chatbot = create_chatbot(
                 index_dir, api_key, subject_areas=config.subject_areas
             )
+        except EmbeddingModelError as e:
+            st.error(
+                "**Embedding-Modell kann nicht geladen werden**\n\n"
+                f"{e}\n\n"
+                "Das Modell muss einmalig von HuggingFace heruntergeladen werden. "
+                "Stellen Sie sicher, dass eine Internetverbindung besteht und "
+                "huggingface.co erreichbar ist."
+            )
+            return None
         except Exception as e:
             st.error(f"Fehler beim Initialisieren des Chatbots: {e}")
             return None
@@ -248,6 +257,11 @@ def main():
                 store = CaseLawVectorStore(persist_directory=config.index_dir)
                 stats = store.get_collection_stats()
                 st.metric("Indizierte Textabschnitte", stats.get('total_chunks', 0))
+            except EmbeddingModelError:
+                st.warning(
+                    "Embedding-Modell nicht verfügbar. "
+                    "Internetzugang zu huggingface.co wird benötigt."
+                )
             except Exception:
                 st.warning("Index-Statistiken nicht verfügbar")
         else:
