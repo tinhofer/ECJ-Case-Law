@@ -72,7 +72,10 @@ class CaseLawVectorStore:
         print(f"Loading embedding model: {embedding_model}")
         self.embedding_model = SentenceTransformer(embedding_model)
 
-        # Initialize ChromaDB
+        # Initialize ChromaDB in embedded/local mode.
+        # Do not switch to HttpClient without first addressing CVE-2026-45829
+        # (unauthenticated RCE in the ChromaDB Python server, unpatched
+        # upstream). See SECURITY.md.
         self.client = chromadb.PersistentClient(
             path=str(self.persist_directory),
             settings=Settings(anonymized_telemetry=False)
