@@ -241,6 +241,29 @@ def document_passes_subject_filter(
 CELEX_PREDICATE = "cdm:resource_legal_id_celex"
 CELEX_PREDICATE_LEGACY = "cdm:resource_legal_celex"
 
+# Human-readable document types by CELEX type code (positions 6-7 of a
+# sector-6 CELEX number). Field testing showed the typeLabel binding is
+# usually absent for case-law, so the code is the reliable source.
+CELEX_DOC_TYPE_LABELS = {
+    "CJ": "Judgment (Court of Justice)",
+    "CO": "Order (Court of Justice)",
+    "CC": "Opinion of the Advocate General",
+    "CV": "Opinion (Court of Justice)",
+    "TJ": "Judgment (General Court)",
+    "TO": "Order (General Court)",
+    "TC": "Opinion (General Court)",
+    "FJ": "Judgment (Civil Service Tribunal)",
+    "FO": "Order (Civil Service Tribunal)",
+}
+
+_CELEX_TYPE_RE = re.compile(r"^6[0-9]{4}([A-Z]{2})")
+
+
+def celex_doc_type(celex: str) -> str | None:
+    """Extract the document-type code (CJ, CC, CO, ...) from a CELEX number."""
+    match = _CELEX_TYPE_RE.match(celex or "")
+    return match.group(1) if match else None
+
 
 def _build_sparql_query(
     limit: int = 1000,
@@ -248,17 +271,9 @@ def _build_sparql_query(
     year_from: int | None = None,
     year_to: int | None = None,
     subject_areas: list[str] | None = None,
-    celex_doc_types: list[str] | None = None,
     celex_predicate: str = CELEX_PREDICATE
 ) -> str:
-    """Build a SPARQL query for case law metadata.
-
-    celex_doc_types restricts results by the CELEX document-type code
-    (positions 6-7 of a sector-6 CELEX number): CJ = ECJ judgment,
-    CO = ECJ order, CC = AG opinion, TJ = General Court judgment, etc.
-    Restricting to judgments keeps the result set small enough that the
-    CELLAR endpoint answers reliably instead of timing out.
-    """
+    """Build a SPARQL query for case law metadata (sector 6, any doc type)."""
 
     # Build date filter. Compare on STR(?date): ISO dates (YYYY-MM-DD)
     # order correctly as strings, and unlike a typed xsd:date comparison
@@ -271,13 +286,10 @@ def _build_sparql_query(
     if year_to:
         date_filter += f'FILTER(STR(?date) <= "{year_to}-12-31")\n'
 
-    # CELEX document-type filter (e.g. only judgments of the Court of Justice).
-    # Without a type restriction, still require sector 6 (case-law).
-    if celex_doc_types:
-        codes = "|".join(re.escape(c) for c in celex_doc_types)
-        celex_filter = f'FILTER(REGEX(STR(?celex), "^6[0-9]{{4}}({codes})"))\n'
-    else:
-        celex_filter = 'FILTER(STRSTARTS(STR(?celex), "6"))\n'
+    # Require CELEX sector 6 (case-law). Document-type filtering happens
+    # client-side: field testing showed the server-side REGEX variant
+    # returning 0 rows on the CELLAR endpoint.
+    celex_filter = 'FILTER(STRSTARTS(STR(?celex), "6"))\n'
 
     # Build EuroVoc subject area filter
     subject_filter = ""
@@ -379,7 +391,9 @@ def _execute_sparql_query(
                     "ecli": binding.get("ecli", {}).get("value"),
                     "case_number": binding.get("caseNumber", {}).get("value"),
                     "court": binding.get("courtLabel", {}).get("value", "Unknown"),
-                    "document_type": binding.get("typeLabel", {}).get("value", "Judgment"),
+                    # Usually absent for case-law; filled in from the CELEX
+                    # code by _filter_and_label_by_doc_type
+                    "document_type": binding.get("typeLabel", {}).get("value", ""),
                 }
                 cases.append(case)
 
@@ -405,6 +419,72 @@ def _execute_sparql_query(
     return []
 
 
+def _filter_and_label_by_doc_type(
+    cases: list[dict],
+    celex_doc_types: list[str] | None
+) -> list[dict]:
+    """Client-side CELEX document-type filtering + human-readable labels.
+
+    Server-side REGEX type filtering proved unreliable on the CELLAR
+    endpoint (returned 0 rows), so pages are fetched unfiltered and
+    narrowed down here. The typeLabel binding is usually absent for
+    case-law, so the label is derived from the CELEX code - previously
+    everything (including AG opinions) defaulted to "Judgment", which
+    mislabels sources in a legal research tool.
+    """
+    result = []
+    for case in cases:
+        code = celex_doc_type(case.get("celex", ""))
+        if celex_doc_types and code not in celex_doc_types:
+            continue
+        if not case.get("document_type"):
+            case = dict(case)
+            case["document_type"] = CELEX_DOC_TYPE_LABELS.get(
+                code, "Case-law document")
+        result.append(case)
+    return result
+
+
+def _fetch_metadata_page(
+    limit: int,
+    offset: int,
+    year_from: int | None,
+    year_to: int | None,
+    subject_areas: list[str] | None,
+    celex_doc_types: list[str] | None
+) -> tuple[list[dict], int]:
+    """Fetch one metadata page. Returns (filtered cases, raw page size).
+
+    The raw page size lets callers paginate correctly even when
+    client-side type filtering shrinks the page.
+    """
+    # Try with subject area filter first (best effort: don't raise here,
+    # since we retry without the filter anyway)
+    if subject_areas:
+        query = _build_sparql_query(limit, offset, year_from, year_to,
+                                    subject_areas)
+        cases = _execute_sparql_query(query, retries=1, raise_on_error=False)
+        if cases:
+            return _filter_and_label_by_doc_type(cases, celex_doc_types), len(cases)
+        # EuroVoc descriptors are often not linked to case-law in CELLAR.
+        # Fall back to querying without the subject area filter.
+        print("  EuroVoc subject filter returned 0 results for case-law. "
+              "Retrying without subject area filter...")
+
+    # Cascade over the CELEX property name (covers CDM naming differences).
+    cases = []
+    for predicate in (CELEX_PREDICATE, CELEX_PREDICATE_LEGACY):
+        query = _build_sparql_query(limit, offset, year_from, year_to,
+                                    subject_areas=None,
+                                    celex_predicate=predicate)
+        cases = _execute_sparql_query(query)
+        if cases:
+            break
+        print(f"  No results via {predicate}.")
+
+    return _filter_and_label_by_doc_type(cases, celex_doc_types), len(cases)
+
+
 def get_case_law_metadata(
     limit: int = 1000,
     offset: int = 0,
@@ -422,15 +502,16 @@ def get_case_law_metadata(
     is automatically retried without the subject area filter.
 
     Args:
-        limit: Maximum number of results
+        limit: Maximum number of results (before doc-type filtering)
         offset: Offset for pagination
         year_from: Filter by start year
         year_to: Filter by end year
         court: Court filter (Court of Justice, General Court, Civil Service Tribunal)
         subject_areas: Optional list of EuroVoc descriptor labels (English) to filter by.
                        Cases must have at least one matching descriptor.
-        celex_doc_types: Optional CELEX document-type codes (e.g. ["CJ"]) to
-                       restrict results to judgments etc.
+        celex_doc_types: CELEX document-type codes to keep (default: ["CJ"],
+                       i.e. judgments of the Court of Justice); pass [] to
+                       keep every document type.
 
     Returns:
         List of case metadata dictionaries
@@ -441,47 +522,9 @@ def get_case_law_metadata(
     if celex_doc_types is None:
         celex_doc_types = ["CJ"]
 
-    # Try with subject area filter first (best effort: don't raise here,
-    # since we retry without the filter anyway)
-    if subject_areas:
-        query = _build_sparql_query(limit, offset, year_from, year_to,
-                                    subject_areas, celex_doc_types)
-        cases = _execute_sparql_query(query, retries=1, raise_on_error=False)
-        if cases:
-            return cases
-        # EuroVoc descriptors are often not linked to case-law in CELLAR.
-        # Fall back to querying without the subject area filter.
-        print("  EuroVoc subject filter returned 0 results for case-law. "
-              "Retrying without subject area filter...")
-
-    # Cascade over (a) the CELEX property name and (b) the document-type
-    # filter. The property fallback covers CDM naming differences; the
-    # filter fallback covers the endpoint's "anytime" timeout truncating
-    # the more expensive REGEX query to 0 rows.
-    last_cases: list[dict] = []
-    for predicate in (CELEX_PREDICATE, CELEX_PREDICATE_LEGACY):
-        query = _build_sparql_query(limit, offset, year_from, year_to,
-                                    subject_areas=None,
-                                    celex_doc_types=celex_doc_types,
-                                    celex_predicate=predicate)
-        last_cases = _execute_sparql_query(query)
-        if last_cases:
-            return last_cases
-
-        if celex_doc_types:
-            print(f"  Query via {predicate} with type filter returned 0 results. "
-                  "Retrying without document-type filter...")
-            query = _build_sparql_query(limit, offset, year_from, year_to,
-                                        subject_areas=None,
-                                        celex_doc_types=None,
-                                        celex_predicate=predicate)
-            last_cases = _execute_sparql_query(query)
-            if last_cases:
-                return last_cases
-
-        print(f"  No results via {predicate}.")
-
-    return last_cases
+    cases, _raw = _fetch_metadata_page(limit, offset, year_from, year_to,
+                                       subject_areas, celex_doc_types)
+    return cases
 
 
 def get_all_case_law_metadata(
@@ -509,13 +552,16 @@ def get_all_case_law_metadata(
     Returns:
         List of case metadata dictionaries
     """
+    if celex_doc_types is None:
+        celex_doc_types = ["CJ"]
+
     all_cases = []
     offset = 0
     page = 1
 
     while True:
         print(f"  Fetching metadata page {page} (offset {offset})...")
-        cases = get_case_law_metadata(
+        cases, raw_count = _fetch_metadata_page(
             limit=page_size,
             offset=offset,
             year_from=year_from,
@@ -524,19 +570,21 @@ def get_all_case_law_metadata(
             celex_doc_types=celex_doc_types
         )
 
-        if not cases:
+        if raw_count == 0:
             break
 
         all_cases.extend(cases)
-        print(f"    Got {len(cases)} cases (total so far: {len(all_cases)})")
+        print(f"    Got {len(cases)} matching cases from a page of {raw_count} "
+              f"(total so far: {len(all_cases)})")
 
         if max_cases is not None and len(all_cases) >= max_cases:
             all_cases = all_cases[:max_cases]
             print(f"    Reached configured maximum of {max_cases} cases.")
             break
 
-        # If we got fewer results than the page size, we've reached the end
-        if len(cases) < page_size:
+        # A short RAW page means we've reached the end of the result set.
+        # (The filtered page is usually shorter - that must not stop paging.)
+        if raw_count < page_size:
             break
 
         offset += page_size
@@ -712,7 +760,8 @@ def create_case_document(metadata: dict) -> CaseLawDocument | None:
         date=metadata.get("date", ""),
         case_number=case_number,
         court=metadata.get("court", "Court of Justice"),
-        document_type=metadata.get("document_type", "Judgment"),
+        document_type=metadata.get("document_type")
+        or CELEX_DOC_TYPE_LABELS.get(celex_doc_type(celex), "Case-law document"),
         text=text,
         eurlex_url=eurlex_url,
         curia_url=curia_url,
@@ -1229,7 +1278,7 @@ def fetch_case_on_demand(celex: str) -> CaseLawDocument | None:
         "date": "",
         "case_number": None,
         "court": "Court of Justice",
-        "document_type": "Judgment"
+        "document_type": ""  # derived from the CELEX code in create_case_document
     }
 
     # Try to get more metadata via SPARQL

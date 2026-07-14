@@ -128,17 +128,15 @@ class TestSparqlQueryBuilding:
         query = _build_sparql_query(limit=10)
         assert "cdm:resource_legal_id_celex" in query
 
-    def test_sector_six_filter_without_doc_types(self):
-        query = _build_sparql_query(limit=10, celex_doc_types=None)
+    def test_sector_six_filter(self):
+        query = _build_sparql_query(limit=10)
         assert 'STRSTARTS(STR(?celex), "6")' in query
 
-    def test_celex_doc_type_filter_in_query(self):
-        query = _build_sparql_query(limit=10, celex_doc_types=["CJ"])
-        assert 'REGEX(STR(?celex), "^6[0-9]{4}(CJ)")' in query
-
-    def test_multiple_doc_types(self):
-        query = _build_sparql_query(limit=10, celex_doc_types=["CJ", "CO"])
-        assert "(CJ|CO)" in query
+    def test_no_server_side_type_regex(self):
+        # Server-side REGEX type filtering returned 0 rows on the CELLAR
+        # endpoint; doc-type filtering must happen client-side instead.
+        query = _build_sparql_query(limit=10)
+        assert "REGEX(STR(?celex)" not in query
 
     def test_date_range_filter_instead_of_year_function(self):
         query = _build_sparql_query(limit=10, year_from=2018, year_to=2020)
@@ -147,9 +145,58 @@ class TestSparqlQueryBuilding:
         assert 'STR(?date) <= "2020-12-31"' in query
         assert "year(?date)" not in query
 
-    def test_no_celex_filter_when_not_requested(self):
-        query = _build_sparql_query(limit=10, celex_doc_types=None)
-        assert "REGEX(STR(?celex)" not in query
+
+class TestClientSideDocTypeFiltering:
+    """Doc-type filtering and labeling from the CELEX code, done client-side."""
+
+    CASES = [
+        {"celex": "62025CJ0100", "document_type": ""},   # judgment
+        {"celex": "62025CC0819", "document_type": ""},   # AG opinion
+        {"celex": "62025CO0055", "document_type": ""},   # order
+    ]
+
+    def test_celex_doc_type_extraction(self):
+        from data_acquisition import celex_doc_type
+        assert celex_doc_type("62025CJ0100") == "CJ"
+        assert celex_doc_type("62025CC0819") == "CC"
+        assert celex_doc_type("32016R0679") is None  # legislation, not sector 6
+        assert celex_doc_type("") is None
+
+    def test_filter_keeps_only_requested_types(self):
+        from data_acquisition import _filter_and_label_by_doc_type
+        kept = _filter_and_label_by_doc_type(list(self.CASES), ["CJ"])
+        assert [c["celex"] for c in kept] == ["62025CJ0100"]
+
+    def test_no_filter_keeps_all_and_labels(self):
+        from data_acquisition import _filter_and_label_by_doc_type
+        kept = _filter_and_label_by_doc_type(list(self.CASES), None)
+        assert len(kept) == 3
+        labels = {c["celex"]: c["document_type"] for c in kept}
+        # AG opinions must NOT be labeled as judgments
+        assert "Advocate General" in labels["62025CC0819"]
+        assert "Judgment" in labels["62025CJ0100"]
+        assert "Order" in labels["62025CO0055"]
+
+    def test_existing_label_preserved(self):
+        from data_acquisition import _filter_and_label_by_doc_type
+        cases = [{"celex": "62025CJ0100", "document_type": "Urteil"}]
+        kept = _filter_and_label_by_doc_type(cases, ["CJ"])
+        assert kept[0]["document_type"] == "Urteil"
+
+    def test_pagination_uses_raw_count(self):
+        """A filtered page smaller than page_size must not stop pagination."""
+        from unittest.mock import patch
+        import data_acquisition as da
+
+        # Two full raw pages (only some CJ), then a short page ending the set
+        pages = [
+            ([{"celex": f"62025CJ{i:04d}", "document_type": ""} for i in range(2)], 5),
+            ([{"celex": f"62024CJ{i:04d}", "document_type": ""} for i in range(2)], 5),
+            ([], 1),
+        ]
+        with patch.object(da, "_fetch_metadata_page", side_effect=pages):
+            result = da.get_all_case_law_metadata(page_size=5)
+        assert len(result) == 4  # both full pages were consumed
 
 
 class TestSparqlErrorHandling:
