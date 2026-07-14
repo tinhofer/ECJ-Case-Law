@@ -32,20 +32,26 @@ LANGUAGE_DISPLAY = {
     "FR": "Französisch"
 }
 
-# System prompt for the EuGH chatbot
-SYSTEM_PROMPT = """Du bist ein juristischer Assistent, der Fragen ausschließlich auf Grundlage der Rechtsprechung des Europäischen Gerichtshofs (EuGH) beantwortet.
+# System prompt for the EuGH chatbot (agentic: the model researches
+# via tools before answering)
+SYSTEM_PROMPT = """Du bist ein juristischer Rechercheassistent, der Fragen ausschließlich auf Grundlage der Rechtsprechung des Europäischen Gerichtshofs (EuGH) beantwortet. Dir stehen Recherche-Werkzeuge zur Verfügung - nutze sie aktiv und gründlich, bevor du antwortest.
+
+ARBEITSWEISE:
+1. Beginne JEDE fachliche Frage mit mindestens einer lokalen semantischen Suche (search_local_judgments). Formuliere bei Bedarf mehrere Suchanfragen mit unterschiedlichen Begriffen.
+2. Nennt der Nutzer eine konkrete Rechtssache (z.B. "C-311/18") oder erscheint eine gefundene Entscheidung zentral für die Antwort: Lade ihren VOLLSTÄNDIGEN Text mit get_full_judgment, bevor du sie inhaltlich auswertest oder wörtlich zitierst.
+3. Findet die lokale Suche nichts Passendes, suche live in der EUR-Lex-Datenbank (search_eurlex_live, falls verfügbar) und lade vielversprechende Treffer im Volltext.
+4. Antworte erst, wenn du genug Material gesammelt hast. Gründlichkeit geht vor Geschwindigkeit.
 
 WICHTIGE REGELN:
-1. Beantworte Fragen NUR basierend auf den bereitgestellten EuGH-Entscheidungen
-2. Wenn die bereitgestellten Dokumente keine relevanten Informationen enthalten, sage das klar
+1. Beantworte Fragen NUR auf Grundlage der über die Werkzeuge abgerufenen EuGH-Entscheidungen
+2. Wenn das abgerufene Material die Frage nicht beantwortet, sage das klar - auch nach gründlicher Suche
 3. Zitiere IMMER die relevanten Entscheidungen mit CELEX-Nummer und verlinke sie
-4. Erkläre komplexe juristische Konzepte verständlich
-5. Wenn du dir unsicher bist, sage das
-6. Erfinde KEINE Rechtsprechung oder Urteile
+4. Wörtliche Zitate nur aus Volltexten, nie aus Suchausschnitten rekonstruieren
+5. Erkläre komplexe juristische Konzepte verständlich
+6. Erfinde KEINE Rechtsprechung - kein Wissen aus dem Gedächtnis zitieren
 
 MEHRSPRACHIGE QUELLEN:
 - Manche Entscheidungen sind nur auf Englisch oder Französisch verfügbar (noch keine deutsche Übersetzung)
-- Dies betrifft besonders aktuelle Entscheidungen
 - Wenn eine Quelle nicht auf Deutsch ist, erwähne dies kurz: "(Quelle auf Englisch/Französisch)"
 - Die Sprache der Quelle ist in den Metadaten angegeben
 
@@ -430,92 +436,218 @@ class EuGHChatbot:
         # Return top terms (max 5)
         return terms[:5]
 
+    # ------------------------------------------------------------------
+    # Agentic research loop: Claude decides per question which tools to
+    # use - local semantic search, full-text loading, live EUR-Lex search
+    # ------------------------------------------------------------------
+
+    MAX_TOOL_ITERATIONS = 8
+
+    def _build_tools(self, enable_live_fallback: bool) -> list[dict]:
+        tools = [
+            {
+                "name": "search_local_judgments",
+                "description": (
+                    "Semantische Suche in der lokalen Datenbank mit EuGH-Urteilen "
+                    "(Volltexte, nach Bedeutung durchsuchbar). Rufe dieses Werkzeug "
+                    "bei JEDER fachlichen Frage zuerst auf - gerne mehrfach mit "
+                    "unterschiedlichen Formulierungen (deutsche Rechtsbegriffe "
+                    "funktionieren am besten). Liefert die relevantesten Passagen "
+                    "mehrerer Urteile samt Metadaten."
+                ),
+                "input_schema": {
+                    "type": "object",
+                    "properties": {
+                        "query": {
+                            "type": "string",
+                            "description": "Suchanfrage in natürlicher Sprache, z.B. 'Pflicht zur Arbeitszeiterfassung leitende Angestellte'"
+                        }
+                    },
+                    "required": ["query"],
+                },
+            },
+            {
+                "name": "get_full_judgment",
+                "description": (
+                    "Lädt den VOLLSTÄNDIGEN Text einer EuGH-Entscheidung. Rufe dieses "
+                    "Werkzeug auf, sobald eine konkrete Entscheidung zentral für die "
+                    "Antwort ist oder der Nutzer sie namentlich nennt - Suchausschnitte "
+                    "reichen für belastbare juristische Aussagen nicht aus. Akzeptiert "
+                    "Rechtssachennummer (z.B. 'C-311/18') oder CELEX-Nummer (z.B. "
+                    "'62018CJ0311'). Nicht lokal vorhandene Entscheidungen werden live "
+                    "von EUR-Lex geholt."
+                ),
+                "input_schema": {
+                    "type": "object",
+                    "properties": {
+                        "reference": {
+                            "type": "string",
+                            "description": "Rechtssachennummer oder CELEX-Nummer der Entscheidung"
+                        }
+                    },
+                    "required": ["reference"],
+                },
+            },
+        ]
+        if enable_live_fallback:
+            tools.append({
+                "name": "search_eurlex_live",
+                "description": (
+                    "Live-Stichwortsuche in der gesamten EUR-Lex-Datenbank (alle "
+                    "EuGH-Entscheidungen seit 1954, nur Titel-/Metadaten-Suche). "
+                    "Rufe dieses Werkzeug auf, wenn die lokale Suche nichts Passendes "
+                    "liefert - z.B. bei älteren Entscheidungen oder Rechtsgebieten "
+                    "außerhalb des lokalen Korpus. Vielversprechende Treffer danach "
+                    "mit get_full_judgment im Volltext laden."
+                ),
+                "input_schema": {
+                    "type": "object",
+                    "properties": {
+                        "keywords": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "description": "1-5 Stichwörter (Begriffe, die im Titel der Entscheidung vorkommen könnten, z.B. Parteinamen oder Rechtssachennummern)"
+                        }
+                    },
+                    "required": ["keywords"],
+                },
+            })
+        return tools
+
+    def _register_source(self, sources: dict, metadata: dict, full_text: bool = False):
+        celex = metadata.get("celex")
+        if not celex:
+            return
+        language = metadata.get("language", "DE")
+        entry = {
+            "celex": celex,
+            "case_number": metadata.get("case_number"),
+            "title": metadata.get("title"),
+            "date": metadata.get("date"),
+            "eurlex_url": metadata.get("eurlex_url")
+            or f"https://eur-lex.europa.eu/legal-content/{language}/TXT/?uri=CELEX:{celex}",
+            "curia_url": metadata.get("curia_url"),
+            "language": language,
+            "language_display": LANGUAGE_DISPLAY.get(language, language),
+            "full_text": full_text,
+        }
+        existing = sources.get(celex)
+        if existing is None or (full_text and not existing.get("full_text")):
+            sources[celex] = entry
+
+    def _tool_search_local(self, query: str, sources: dict) -> str:
+        results = self.vector_store.search(query=query, n_results=self.n_results * 4)
+        unique = self.vector_store.get_unique_cases(results)
+        unique = self._attach_additional_chunks(unique, results)[:self.n_results]
+        if not unique:
+            return ("Keine Treffer im lokalen Index. Versuche eine andere "
+                    "Formulierung oder die Live-Suche.")
+        for r in unique:
+            self._register_source(sources, r.get("metadata", {}))
+        return format_context(unique)
+
+    def _tool_full_judgment(self, reference: str, sources: dict, state: dict) -> str:
+        docs = self._find_referenced_cases(reference)
+
+        if not docs:
+            # Not local: try to fetch live from EUR-Lex
+            celex_match = self.CELEX_REF_RE.search(reference.upper())
+            celex = celex_match.group(1) if celex_match else None
+            if not celex:
+                # Look the case number up via live title search
+                try:
+                    hits = live_search_cases(query_terms=[reference.strip()], limit=3)
+                except Exception:
+                    hits = []
+                celex = hits[0].get("celex") if hits else None
+            if celex:
+                state["used_live"] = True
+                try:
+                    doc = fetch_case_on_demand(celex)
+                except Exception:
+                    doc = None
+                if doc:
+                    docs = [doc]
+
+        if not docs:
+            return (f"Entscheidung '{reference}' wurde weder lokal noch auf "
+                    "EUR-Lex gefunden. Bitte Schreibweise prüfen (z.B. 'C-311/18') "
+                    "oder per search_eurlex_live nach der Rechtssache suchen.")
+
+        parts = []
+        for result in self._full_text_results(docs):
+            meta = result["metadata"]
+            self._register_source(sources, meta, full_text=True)
+            language_display = LANGUAGE_DISPLAY.get(meta.get("language", "DE"),
+                                                    meta.get("language", "DE"))
+            parts.append(
+                f"=== VOLLSTÄNDIGER TEXT ===\n"
+                f"CELEX: {meta.get('celex')}\n"
+                f"Rechtssache: {meta.get('case_number') or 'unbekannt'}\n"
+                f"Typ: {meta.get('document_type')}\n"
+                f"Datum: {meta.get('date')}\n"
+                f"Sprache: {language_display}\n"
+                f"EUR-Lex: {meta.get('eurlex_url')}\n\n"
+                f"{result['text']}"
+            )
+        return "\n\n".join(parts)
+
+    def _tool_search_live(self, keywords: list[str], state: dict) -> str:
+        state["used_live"] = True
+        try:
+            hits = live_search_cases(query_terms=[str(k) for k in keywords][:5],
+                                     limit=10, subject_areas=self.subject_areas)
+        except Exception as e:
+            return f"Live-Suche fehlgeschlagen ({e}). Bitte später erneut versuchen."
+        if not hits:
+            return ("Keine Treffer in EUR-Lex für diese Stichwörter. Die Suche "
+                    "durchsucht nur Entscheidungstitel - andere Begriffe "
+                    "(Parteinamen, Rechtssachennummer) versuchen.")
+        lines = ["Treffer (Metadaten; Volltext bei Bedarf mit get_full_judgment laden):"]
+        for h in hits:
+            lines.append(f"- CELEX {h.get('celex')} | {h.get('case_number') or '?'} | "
+                         f"{h.get('date') or '?'} | {(h.get('title') or '')[:150]}")
+        return "\n".join(lines)
+
+    def _run_tool(self, name: str, tool_input: dict, sources: dict, state: dict) -> str:
+        try:
+            if name == "search_local_judgments":
+                return self._tool_search_local(str(tool_input.get("query", "")), sources)
+            if name == "get_full_judgment":
+                return self._tool_full_judgment(str(tool_input.get("reference", "")),
+                                                sources, state)
+            if name == "search_eurlex_live":
+                return self._tool_search_live(tool_input.get("keywords", []), state)
+            return f"Unbekanntes Werkzeug: {name}"
+        except Exception as e:
+            return f"Werkzeugfehler ({name}): {e}"
+
+    _TOOL_STATUS_LABELS = {
+        "search_local_judgments": "Durchsuche lokale Urteilsdatenbank",
+        "get_full_judgment": "Lade Urteil im Volltext",
+        "search_eurlex_live": "Suche live in EUR-Lex",
+    }
+
+    def _tool_status_line(self, name: str, tool_input: dict) -> str:
+        label = self._TOOL_STATUS_LABELS.get(name, name)
+        detail = (tool_input.get("query") or tool_input.get("reference")
+                  or ", ".join(map(str, tool_input.get("keywords", []))) or "")
+        detail = str(detail)[:120]
+        return f"\n\n> 🔎 *{label}: {detail}*\n\n"
+
     def answer(self, question: str, enable_live_fallback: bool = True) -> dict:
         """
-        Answer a question based on EuGH case law.
+        Answer a question based on EuGH case law (agentic research loop).
 
         Args:
             question: User's question
-            enable_live_fallback: Whether to search older cases if local index has no results
+            enable_live_fallback: Whether the live EUR-Lex search tool is available
 
         Returns:
             Dict with answer, sources, and metadata
         """
-
-        # Retrieve relevant documents (with optional live fallback)
-        search_results, used_live_fallback = self.search_relevant_cases(
-            question,
-            enable_live_fallback=enable_live_fallback
-        )
-
-        if not search_results:
-            return {
-                "answer": "Es wurden keine relevanten EuGH-Entscheidungen zu Ihrer Frage gefunden. "
-                         "Bitte formulieren Sie Ihre Frage anders oder stellen Sie eine andere Frage.",
-                "sources": [],
-                "context_used": False,
-                "used_live_fallback": False
-            }
-
-        # Format context
-        context = format_context(search_results)
-
-        # Build the prompt
-        user_message = f"""Basierend auf den folgenden EuGH-Entscheidungen, beantworte die Frage des Nutzers.
-
-RELEVANTE DOKUMENTE:
-{context}
-
-FRAGE DES NUTZERS:
-{question}
-
-Beantworte die Frage basierend auf den obigen Dokumenten. Zitiere die relevanten Entscheidungen mit Links."""
-
-        # Add to conversation history
-        self.conversation_history.append({
-            "role": "user",
-            "content": user_message
-        })
-
-        # Call Claude API
-        response = self.client.messages.create(
-            model=self.model,
-            max_tokens=4096,
-            system=SYSTEM_PROMPT,
-            messages=self.conversation_history
-        )
-
-        assistant_message = response.content[0].text
-
-        # Add response to history
-        self.conversation_history.append({
-            "role": "assistant",
-            "content": assistant_message
-        })
-
-        # Extract sources
-        sources = []
-        for result in search_results:
-            metadata = result.get('metadata', {})
-            language = metadata.get('language', 'DE')
-            sources.append({
-                "celex": metadata.get('celex'),
-                "case_number": metadata.get('case_number'),
-                "title": metadata.get('title'),
-                "date": metadata.get('date'),
-                "eurlex_url": metadata.get('eurlex_url'),
-                "curia_url": metadata.get('curia_url'),
-                "language": language,
-                "language_display": LANGUAGE_DISPLAY.get(language, language)
-            })
-
-        return {
-            "answer": assistant_message,
-            "sources": sources,
-            "context_used": True,
-            "model": self.model,
-            "used_live_fallback": used_live_fallback
-        }
+        return self.answer_stream(question, on_token=None,
+                                  enable_live_fallback=enable_live_fallback)
 
     def clear_history(self):
         """Clear conversation history."""
@@ -528,95 +660,101 @@ Beantworte die Frage basierend auf den obigen Dokumenten. Zitiere die relevanten
         enable_live_fallback: bool = True
     ) -> dict:
         """
-        Answer a question with streaming response.
+        Answer a question via an agentic research loop with streaming.
+
+        Claude decides per question which tools to use (local semantic
+        search, full-text loading, live EUR-Lex search) and answers only
+        from the retrieved material. Thorough questions take 60-90s.
 
         Args:
             question: User's question
-            on_token: Callback function for each token
-            enable_live_fallback: Whether to search older cases if local index has no results
+            on_token: Callback for streamed text (including tool status lines)
+            enable_live_fallback: Whether the live EUR-Lex search tool is available
 
         Returns:
             Dict with answer, sources, and metadata
         """
+        tools = self._build_tools(enable_live_fallback)
+        sources: dict[str, dict] = {}
+        state = {"used_live": False}
 
-        # Retrieve relevant documents (with optional live fallback)
-        search_results, used_live_fallback = self.search_relevant_cases(
-            question,
-            enable_live_fallback=enable_live_fallback
-        )
+        # The user question goes into the persistent history as-is; the
+        # tool turns of THIS answer stay local to the loop so follow-up
+        # questions don't drag megabytes of old tool results along.
+        self.conversation_history.append({"role": "user", "content": question})
+        messages = list(self.conversation_history)
 
-        if not search_results:
-            return {
-                "answer": "Es wurden keine relevanten EuGH-Entscheidungen gefunden.",
-                "sources": [],
-                "context_used": False,
-                "used_live_fallback": False
-            }
+        answer_parts: list[str] = []
 
-        # Format context
-        context = format_context(search_results)
+        for _iteration in range(self.MAX_TOOL_ITERATIONS):
+            with self.client.messages.stream(
+                model=self.model,
+                max_tokens=8000,
+                system=SYSTEM_PROMPT,
+                tools=tools,
+                messages=messages,
+            ) as stream:
+                for text in stream.text_stream:
+                    if on_token:
+                        on_token(text)
+                response = stream.get_final_message()
 
-        # Build the prompt
-        user_message = f"""Basierend auf den folgenden EuGH-Entscheidungen, beantworte die Frage des Nutzers.
+            turn_text = "".join(
+                block.text for block in response.content
+                if getattr(block, "type", "") == "text"
+            )
+            if turn_text.strip():
+                answer_parts.append(turn_text)
 
-RELEVANTE DOKUMENTE:
-{context}
+            if response.stop_reason != "tool_use":
+                break
 
-FRAGE DES NUTZERS:
-{question}
-
-Beantworte die Frage basierend auf den obigen Dokumenten. Zitiere die relevanten Entscheidungen mit Links."""
-
-        self.conversation_history.append({
-            "role": "user",
-            "content": user_message
-        })
-
-        # Stream response
-        full_response = ""
-
-        with self.client.messages.stream(
-            model=self.model,
-            max_tokens=4096,
-            system=SYSTEM_PROMPT,
-            messages=self.conversation_history
-        ) as stream:
-            for text in stream.text_stream:
-                full_response += text
+            # Execute the requested tools and feed the results back
+            messages.append({"role": "assistant", "content": response.content})
+            tool_results = []
+            for block in response.content:
+                if getattr(block, "type", "") != "tool_use":
+                    continue
+                status = self._tool_status_line(block.name, block.input or {})
                 if on_token:
-                    on_token(text)
+                    on_token(status)
+                answer_parts.append(status.strip("\n"))
+                result_text = self._run_tool(block.name, block.input or {},
+                                             sources, state)
+                tool_results.append({
+                    "type": "tool_result",
+                    "tool_use_id": block.id,
+                    "content": result_text,
+                })
+            messages.append({"role": "user", "content": tool_results})
+        else:
+            note = ("\n\n*Hinweis: Recherche-Limit erreicht - die Antwort "
+                    "basiert auf dem bis hierhin gesammelten Material.*")
+            answer_parts.append(note)
+            if on_token:
+                on_token(note)
+
+        full_response = "\n\n".join(part for part in answer_parts if part.strip())
 
         self.conversation_history.append({
             "role": "assistant",
-            "content": full_response
+            "content": full_response or "(keine Antwort)"
         })
-
-        # Extract sources
-        sources = []
-        for result in search_results:
-            metadata = result.get('metadata', {})
-            language = metadata.get('language', 'DE')
-            sources.append({
-                "celex": metadata.get('celex'),
-                "case_number": metadata.get('case_number'),
-                "title": metadata.get('title'),
-                "eurlex_url": metadata.get('eurlex_url'),
-                "language": language,
-                "language_display": LANGUAGE_DISPLAY.get(language, language)
-            })
 
         return {
             "answer": full_response,
-            "sources": sources,
-            "context_used": True,
-            "used_live_fallback": used_live_fallback
+            "sources": list(sources.values()),
+            "context_used": bool(sources),
+            "model": self.model,
+            "used_live_fallback": state["used_live"],
         }
 
 
 def create_chatbot(
     index_dir: Path | str,
     api_key: str | None = None,
-    subject_areas: list[str] | None = None
+    subject_areas: list[str] | None = None,
+    cases_dir: Path | str | None = None
 ) -> EuGHChatbot:
     """
     Create a chatbot instance with an existing index.
@@ -625,6 +763,7 @@ def create_chatbot(
         index_dir: Path to the vector store index
         api_key: Optional API key
         subject_areas: Optional EuroVoc descriptor labels to filter live searches
+        cases_dir: Directory with case JSON files (for full-text loading)
 
     Returns:
         Configured EuGHChatbot instance
@@ -634,7 +773,8 @@ def create_chatbot(
     return EuGHChatbot(
         vector_store=vector_store,
         api_key=api_key,
-        subject_areas=subject_areas
+        subject_areas=subject_areas,
+        cases_dir=cases_dir
     )
 
 
