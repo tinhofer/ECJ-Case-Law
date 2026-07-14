@@ -82,33 +82,36 @@ def check_packages():
 def check_eurlex_sparql():
     from data_acquisition import get_case_law_metadata
 
-    # Step 1: minimal raw query (no filters) - proves basic connectivity
-    # and shows what CELEX/date values actually look like in CELLAR.
-    minimal_query = """
-    PREFIX cdm: <http://publications.europa.eu/ontology/cdm#>
-    SELECT ?celex ?date (DATATYPE(?date) AS ?dateType)
-    WHERE {
-        ?work a cdm:case-law .
-        ?work cdm:resource_legal_celex ?celex .
-        ?work cdm:work_date_document ?date .
-    }
-    LIMIT 3
-    """
-    minimal_ok = False
-    try:
+    # Step 1: minimal raw queries (no filters) - prove basic connectivity
+    # and determine which CELEX property variant this endpoint uses.
+    def _probe_predicate(predicate: str):
         from SPARQLWrapper import SPARQLWrapper, JSON
         from data_acquisition import SPARQL_ENDPOINT, USER_AGENT
         sp = SPARQLWrapper(SPARQL_ENDPOINT, agent=USER_AGENT)
-        sp.setQuery(minimal_query)
+        sp.setQuery(f"""
+        PREFIX cdm: <http://publications.europa.eu/ontology/cdm#>
+        SELECT ?celex ?date
+        WHERE {{
+            ?work a cdm:case-law .
+            ?work {predicate} ?celex .
+            ?work cdm:work_date_document ?date .
+        }}
+        LIMIT 3
+        """)
         sp.setReturnFormat(JSON)
         sp.setTimeout(60)
-        bindings = sp.query().convert()["results"]["bindings"]
-        if bindings:
-            minimal_ok = True
-            b = bindings[0]
-            print(f"       Roh-Beispiel: celex={b.get('celex', {}).get('value')}, "
-                  f"date={b.get('date', {}).get('value')}, "
-                  f"date-Typ={b.get('dateType', {}).get('value', '(untypisiert)')}")
+        return sp.query().convert()["results"]["bindings"]
+
+    minimal_ok = False
+    try:
+        for predicate in ("cdm:resource_legal_id_celex", "cdm:resource_legal_celex"):
+            bindings = _probe_predicate(predicate)
+            print(f"       Probe {predicate}: {len(bindings)} Zeilen"
+                  + (f", z.B. celex={bindings[0].get('celex', {}).get('value')}, "
+                     f"date={bindings[0].get('date', {}).get('value')}"
+                     if bindings else ""))
+            if bindings:
+                minimal_ok = True
     except Exception as e:
         report(False, "EUR-Lex SPARQL-Endpoint (Basis-Abfrage)", str(e)[:200],
                "Internetverbindung prüfen; Firewall/Proxy muss "
@@ -117,8 +120,8 @@ def check_eurlex_sparql():
 
     if not minimal_ok:
         report(False, "EUR-Lex SPARQL-Endpoint (Basis-Abfrage)",
-               "Verbindung OK, aber 0 Zeilen für eine Minimal-Abfrage",
-               "EUR-Lex evtl. überlastet - später erneut versuchen")
+               "Verbindung OK, aber 0 Zeilen über beide CELEX-Property-Varianten",
+               "Bitte diese komplette Ausgabe an den Entwickler weitergeben")
         return []
     report(True, "EUR-Lex SPARQL-Endpoint (Basis-Abfrage)", "Verbindung OK")
 

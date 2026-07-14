@@ -122,6 +122,16 @@ class TestRejectedCelexPersistence:
 
 
 class TestSparqlQueryBuilding:
+    def test_uses_correct_celex_predicate(self):
+        # cdm:resource_legal_celex does not exist in CELLAR (matches 0 rows);
+        # the correct property is cdm:resource_legal_id_celex.
+        query = _build_sparql_query(limit=10)
+        assert "cdm:resource_legal_id_celex" in query
+
+    def test_sector_six_filter_without_doc_types(self):
+        query = _build_sparql_query(limit=10, celex_doc_types=None)
+        assert 'STRSTARTS(STR(?celex), "6")' in query
+
     def test_celex_doc_type_filter_in_query(self):
         query = _build_sparql_query(limit=10, celex_doc_types=["CJ"])
         assert 'REGEX(STR(?celex), "^6[0-9]{4}(CJ)")' in query

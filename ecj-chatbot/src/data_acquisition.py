@@ -234,13 +234,22 @@ def document_passes_subject_filter(
     return matches_subject_filter(doc.keywords, lang_keywords)
 
 
+# CELEX property in CELLAR. Field testing showed that a query using
+# cdm:resource_legal_celex matches ZERO rows - the property in CELLAR is
+# cdm:resource_legal_id_celex. The legacy name is kept as a runtime
+# fallback in case some deployments differ.
+CELEX_PREDICATE = "cdm:resource_legal_id_celex"
+CELEX_PREDICATE_LEGACY = "cdm:resource_legal_celex"
+
+
 def _build_sparql_query(
     limit: int = 1000,
     offset: int = 0,
     year_from: int | None = None,
     year_to: int | None = None,
     subject_areas: list[str] | None = None,
-    celex_doc_types: list[str] | None = None
+    celex_doc_types: list[str] | None = None,
+    celex_predicate: str = CELEX_PREDICATE
 ) -> str:
     """Build a SPARQL query for case law metadata.
 
@@ -262,11 +271,13 @@ def _build_sparql_query(
     if year_to:
         date_filter += f'FILTER(STR(?date) <= "{year_to}-12-31")\n'
 
-    # CELEX document-type filter (e.g. only judgments of the Court of Justice)
-    celex_filter = ""
+    # CELEX document-type filter (e.g. only judgments of the Court of Justice).
+    # Without a type restriction, still require sector 6 (case-law).
     if celex_doc_types:
         codes = "|".join(re.escape(c) for c in celex_doc_types)
         celex_filter = f'FILTER(REGEX(STR(?celex), "^6[0-9]{{4}}({codes})"))\n'
+    else:
+        celex_filter = 'FILTER(STRSTARTS(STR(?celex), "6"))\n'
 
     # Build EuroVoc subject area filter
     subject_filter = ""
@@ -294,7 +305,7 @@ def _build_sparql_query(
         ?work a cdm:case-law .
 
         # CELEX number (required)
-        ?work cdm:resource_legal_celex ?celex .
+        ?work {celex_predicate} ?celex .
         {celex_filter}
         # Date (required so date filtering and ordering stay cheap)
         ?work cdm:work_date_document ?date .
@@ -443,21 +454,34 @@ def get_case_law_metadata(
         print("  EuroVoc subject filter returned 0 results for case-law. "
               "Retrying without subject area filter...")
 
-    query = _build_sparql_query(limit, offset, year_from, year_to,
-                                subject_areas=None, celex_doc_types=celex_doc_types)
-    cases = _execute_sparql_query(query)
-    if cases or not celex_doc_types:
-        return cases
+    # Cascade over (a) the CELEX property name and (b) the document-type
+    # filter. The property fallback covers CDM naming differences; the
+    # filter fallback covers the endpoint's "anytime" timeout truncating
+    # the more expensive REGEX query to 0 rows.
+    last_cases: list[dict] = []
+    for predicate in (CELEX_PREDICATE, CELEX_PREDICATE_LEGACY):
+        query = _build_sparql_query(limit, offset, year_from, year_to,
+                                    subject_areas=None,
+                                    celex_doc_types=celex_doc_types,
+                                    celex_predicate=predicate)
+        last_cases = _execute_sparql_query(query)
+        if last_cases:
+            return last_cases
 
-    # 0 results with the CELEX type filter can also mean the endpoint's
-    # "anytime" timeout truncated the (more expensive) REGEX query.
-    # Fall back to the unfiltered query so the app still gets data;
-    # the Stichwort filter downstream keeps the corpus focused.
-    print("  CELEX type filter returned 0 results. "
-          "Retrying without document-type filter...")
-    query = _build_sparql_query(limit, offset, year_from, year_to,
-                                subject_areas=None, celex_doc_types=None)
-    return _execute_sparql_query(query)
+        if celex_doc_types:
+            print(f"  Query via {predicate} with type filter returned 0 results. "
+                  "Retrying without document-type filter...")
+            query = _build_sparql_query(limit, offset, year_from, year_to,
+                                        subject_areas=None,
+                                        celex_doc_types=None,
+                                        celex_predicate=predicate)
+            last_cases = _execute_sparql_query(query)
+            if last_cases:
+                return last_cases
+
+        print(f"  No results via {predicate}.")
+
+    return last_cases
 
 
 def get_all_case_law_metadata(
@@ -531,9 +555,14 @@ def get_all_case_law_metadata(
 
 
 def _extract_text_from_html(content: bytes) -> str | None:
-    """Extract judgment text from an HTML page; None if it isn't a usable document."""
+    """Extract judgment text from an HTML/XML page; None if it isn't usable.
+
+    CELLAR serves some documents as XML (e.g. Formex); pick the parser
+    accordingly so text extraction is reliable and warning-free.
+    """
     from bs4 import BeautifulSoup
-    soup = BeautifulSoup(content, 'lxml')
+    is_xml = content.lstrip()[:6].lower().startswith(b"<?xml")
+    soup = BeautifulSoup(content, "xml" if is_xml else "lxml")
 
     # Check for "document not available" indicators
     page_text = soup.get_text()
@@ -1101,7 +1130,7 @@ def _build_live_search_query(
     SELECT DISTINCT ?celex ?title ?date ?caseNumber
     WHERE {{
         ?work a cdm:case-law .
-        ?work cdm:resource_legal_celex ?celex .
+        ?work {CELEX_PREDICATE} ?celex .
 
         OPTIONAL {{ ?work cdm:work_date_document ?date . }}
         OPTIONAL {{
@@ -1209,7 +1238,7 @@ def fetch_case_on_demand(celex: str) -> CaseLawDocument | None:
 
     SELECT ?title ?date ?caseNumber
     WHERE {{
-        ?work cdm:resource_legal_celex "{celex}" .
+        ?work {CELEX_PREDICATE} "{celex}" .
         OPTIONAL {{ ?work cdm:work_date_document ?date . }}
         OPTIONAL {{ ?work cdm:work_title ?title . }}
         OPTIONAL {{ ?work cdm:case-law_case_number ?caseNumber . }}
