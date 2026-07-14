@@ -139,11 +139,21 @@ class TestSparqlQueryBuilding:
         assert "REGEX(STR(?celex)" not in query
 
     def test_date_range_filter_instead_of_year_function(self):
-        query = _build_sparql_query(limit=10, year_from=2018, year_to=2020)
+        query = _build_sparql_query(limit=10, date_from="2018-01-01",
+                                    date_to="2020-12-31")
         # String comparison on ISO dates: robust to literal typing in CELLAR
         assert 'STR(?date) >= "2018-01-01"' in query
         assert 'STR(?date) <= "2020-12-31"' in query
         assert "year(?date)" not in query
+
+    def test_no_expensive_constructs(self):
+        # ORDER BY / OFFSET / label joins made the endpoint's anytime
+        # timeout truncate results to 0-104 rows; they must stay out.
+        query = _build_sparql_query(limit=10, date_from="2026-06-01",
+                                    date_to="2026-06-30")
+        assert "ORDER BY" not in query
+        assert "OFFSET" not in query
+        assert "skos:prefLabel" not in query
 
 
 class TestClientSideDocTypeFiltering:
@@ -183,40 +193,47 @@ class TestClientSideDocTypeFiltering:
         kept = _filter_and_label_by_doc_type(cases, ["CJ"])
         assert kept[0]["document_type"] == "Urteil"
 
-    def test_pagination_uses_raw_count(self):
-        """A filtered page smaller than page_size must not stop pagination."""
+    def test_month_windows_newest_first_with_correct_boundaries(self):
+        from data_acquisition import _month_windows
+        windows = _month_windows(2020, 2020)  # fixed past year: no today-dependence
+        assert len(windows) == 12
+        assert windows[0] == ("2020-12-01", "2020-12-31")   # newest first
+        assert windows[-1] == ("2020-01-01", "2020-01-31")
+        assert ("2020-02-01", "2020-02-29") in windows      # leap year
+
+    def test_month_windows_span_years(self):
+        from data_acquisition import _month_windows
+        windows = _month_windows(2019, 2020)
+        assert len(windows) == 24
+        assert windows[12] == ("2019-12-01", "2019-12-31")
+
+    def test_windowed_fetch_collects_across_months(self):
+        """Fetching walks month windows and accumulates until max_cases."""
         from unittest.mock import patch
         import data_acquisition as da
 
-        # Two full raw pages (only some CJ), then an empty page ending the set
-        pages = [
-            ([{"celex": f"62025CJ{i:04d}", "document_type": ""} for i in range(2)], 5),
-            ([{"celex": f"62024CJ{i:04d}", "document_type": ""} for i in range(2)], 5),
-            ([], 0),
-        ]
-        with patch.object(da, "_fetch_metadata_page", side_effect=pages):
-            result = da.get_all_case_law_metadata(page_size=5)
-        assert len(result) == 4  # both full pages were consumed
+        case1 = {"celex": "62020CJ0001", "document_type": "", "date": "2020-12-10"}
+        case2 = {"celex": "62020CJ0002", "document_type": "", "date": "2020-11-05"}
+        pages = [([case1], 4), ([case2], 3)]
+        with patch.object(da, "_fetch_metadata_window", side_effect=pages) as mock:
+            result = da.get_all_case_law_metadata(
+                year_from=2020, year_to=2020, max_cases=2)
+        assert [c["celex"] for c in result] == ["62020CJ0001", "62020CJ0002"]
+        assert mock.call_count == 2  # stopped at max_cases, not all 12 months
 
-    def test_partial_pages_do_not_end_pagination(self):
-        """CELLAR's anytime timeout returns partial pages; only an empty
-        page means the result set is exhausted (field: 104 rows for a
-        1000-row request despite thousands of matches)."""
+    def test_empty_window_retried_once(self):
+        """An empty month may be an endpoint timeout - retry once (field:
+        the same query returned 104 rows on one run and 0 on the next)."""
         from unittest.mock import patch
         import data_acquisition as da
 
-        pages = [
-            ([{"celex": "62025CJ0001", "document_type": ""}], 104),  # partial!
-            ([{"celex": "62024CJ0002", "document_type": ""}], 50),   # partial!
-            ([], 0),
-        ]
-        with patch.object(da, "_fetch_metadata_page", side_effect=pages) as mock:
-            result = da.get_all_case_law_metadata(page_size=1000)
-        assert len(result) == 2          # kept paging past the short pages
-        assert mock.call_count == 3
-        # Offset advances by rows actually received (104, then +50)
-        offsets = [call.kwargs["offset"] for call in mock.call_args_list]
-        assert offsets == [0, 104, 154]
+        case = {"celex": "62020CJ0003", "document_type": "", "date": "2020-11-20"}
+        pages = [([], 0), ([], 0), ([case], 2)]  # Dec empty twice, Nov delivers
+        with patch.object(da, "_fetch_metadata_window", side_effect=pages) as mock:
+            result = da.get_all_case_law_metadata(
+                year_from=2020, year_to=2020, max_cases=1)
+        assert len(result) == 1
+        assert mock.call_count == 3  # December was retried before moving on
 
 
 class TestSparqlErrorHandling:
