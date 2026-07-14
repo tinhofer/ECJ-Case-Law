@@ -268,6 +268,101 @@ class TestTopicCorpora:
         assert cfg.topic_celex == ["32016R0679", "32003L0088"]
 
 
+class TestThemesFile:
+    """User-editable themen.txt: keyword lists and topic acts."""
+
+    CONTENT = """
+# Kommentarzeile
+[schlagwoerter_de]
+Datenschutz
+Fluggastrechte  # Inline-Kommentar
+Weingesetz
+
+[schlagwoerter_en]
+data protection
+
+[schlagwoerter_fr]
+
+[rechtsakte]
+32016R0679    # DSGVO
+32004R0261 Fluggastrechte-VO
+"""
+
+    def test_parse_sections_comments_and_empty(self, tmp_path):
+        from config import parse_themes_file
+        f = tmp_path / "themen.txt"
+        f.write_text(self.CONTENT, encoding="utf-8")
+        sections = parse_themes_file(f)
+        assert sections["schlagwoerter_de"] == ["Datenschutz", "Fluggastrechte", "Weingesetz"]
+        assert sections["schlagwoerter_en"] == ["data protection"]
+        assert sections["schlagwoerter_fr"] == []  # empty = filter disabled
+        assert sections["rechtsakte"] == ["32016R0679", "32004R0261 Fluggastrechte-VO"]
+
+    def test_parse_handles_bom(self, tmp_path):
+        from config import parse_themes_file
+        f = tmp_path / "themen.txt"
+        f.write_bytes(b"\xef\xbb\xbf[schlagwoerter_de]\nDatenschutz\n")  # Notepad BOM
+        assert parse_themes_file(f)["schlagwoerter_de"] == ["Datenschutz"]
+
+    def test_from_env_loads_themes_file(self, tmp_path, monkeypatch):
+        from config import Config
+        f = tmp_path / "themen.txt"
+        f.write_text(self.CONTENT, encoding="utf-8")
+        monkeypatch.setenv("ECJ_THEMES_FILE", str(f))
+        cfg = Config.from_env()
+        assert cfg.subject_keywords_de == ["Datenschutz", "Fluggastrechte", "Weingesetz"]
+        assert cfg.subject_keywords_fr == []
+        # First token per rechtsakte line (labels after the number allowed)
+        assert cfg.topic_celex == ["32016R0679", "32004R0261"]
+        assert cfg.themes_file_loaded == str(f)
+
+    def test_env_var_beats_themes_file_for_topics(self, tmp_path, monkeypatch):
+        from config import Config
+        f = tmp_path / "themen.txt"
+        f.write_text(self.CONTENT, encoding="utf-8")
+        monkeypatch.setenv("ECJ_THEMES_FILE", str(f))
+        monkeypatch.setenv("ECJ_TOPIC_CELEX", "32003L0088")
+        cfg = Config.from_env()
+        assert cfg.topic_celex == ["32003L0088"]
+
+    def test_missing_file_keeps_defaults(self, tmp_path, monkeypatch):
+        from config import Config
+        monkeypatch.setenv("ECJ_THEMES_FILE", str(tmp_path / "nicht-da.txt"))
+        cfg = Config.from_env()
+        assert cfg.themes_file_loaded is None
+        assert "Sozialpolitik" in cfg.subject_keywords_de
+
+
+class TestRejectedResetOnKeywordChange:
+    """Broadened keyword lists must give previously rejected cases a
+    second chance - otherwise new topics silently never arrive."""
+
+    def test_rejected_cleared_when_keywords_change(self):
+        from data_acquisition import _reset_rejected_if_keywords_changed
+        checkpoint = {"rejected_celex": ["62020CJ0001"],
+                      "keywords_fingerprint": "old"}
+        rejected = _reset_rejected_if_keywords_changed(
+            checkpoint, {"DE": ["Datenschutz", "Weingesetz"]})
+        assert rejected == set()
+        assert checkpoint["rejected_celex"] == []
+        assert checkpoint["keywords_fingerprint"] != "old"
+
+    def test_rejected_kept_when_keywords_unchanged(self):
+        from data_acquisition import (_reset_rejected_if_keywords_changed,
+                                      _keywords_fingerprint)
+        keywords = {"DE": ["Datenschutz"]}
+        checkpoint = {"rejected_celex": ["62020CJ0001"],
+                      "keywords_fingerprint": _keywords_fingerprint(keywords)}
+        rejected = _reset_rejected_if_keywords_changed(checkpoint, keywords)
+        assert rejected == {"62020CJ0001"}
+
+    def test_fingerprint_stable_across_key_order(self):
+        from data_acquisition import _keywords_fingerprint
+        a = _keywords_fingerprint({"DE": ["x"], "EN": ["y"]})
+        b = _keywords_fingerprint({"EN": ["y"], "DE": ["x"]})
+        assert a == b
+
+
 class TestRejectedCelexPersistence:
     """Rejected cases are stored in the checkpoint so they are not
     re-downloaded on every start."""

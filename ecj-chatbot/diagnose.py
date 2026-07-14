@@ -319,6 +319,17 @@ def check_data_dir():
         cfg = get_config()
         cfg.ensure_directories()
         status = cfg.get_status()
+
+        if cfg.themes_file_loaded:
+            report(True, "Themen-Datei", cfg.themes_file_loaded)
+        else:
+            warn("Keine themen.txt gefunden - eingebaute Standardlisten aktiv",
+                 "Zum Anpassen: copy themen.example.txt themen.txt, dann editieren")
+        print(f"       Schlagwörter: DE {len(cfg.subject_keywords_de)}, "
+              f"EN {len(cfg.subject_keywords_en)}, FR {len(cfg.subject_keywords_fr)}; "
+              f"Rechtsakte (Themen-Korpus): "
+              f"{', '.join(cfg.topic_celex) if cfg.topic_celex else 'keine'}")
+
         report(True, "Datenverzeichnis", status["data_dir"])
         print(f"       Lokale Entscheidungen: {status['cases_count']}, "
               f"Index vorhanden: {'ja' if status['index_exists'] else 'nein'}")

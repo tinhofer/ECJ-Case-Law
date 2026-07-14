@@ -10,6 +10,27 @@ from dataclasses import dataclass, field
 
 from dotenv import load_dotenv
 
+
+def parse_themes_file(path: Path) -> dict[str, list[str]]:
+    """Parse the user-editable themes file (themen.txt).
+
+    Format: [section] headers, one entry per line, '#' starts a comment.
+    Sections: schlagwoerter_de / schlagwoerter_en / schlagwoerter_fr
+    (subject keywords) and rechtsakte (CELEX numbers of legal acts).
+    """
+    sections: dict[str, list[str]] = {}
+    current: str | None = None
+    for raw_line in Path(path).read_text(encoding="utf-8-sig").splitlines():
+        line = raw_line.split("#", 1)[0].strip()
+        if not line:
+            continue
+        if line.startswith("[") and line.endswith("]"):
+            current = line[1:-1].strip().lower()
+            sections[current] = []
+        elif current is not None:
+            sections[current].append(line)
+    return sections
+
 # override=True: the project's .env file is authoritative. Without it,
 # a stale ANTHROPIC_API_KEY stored in the Windows/macOS environment
 # (e.g. from an old tutorial setup) silently wins over the .env file,
@@ -58,9 +79,12 @@ class Config:
 
     # Topic corpora: CELEX numbers of legal acts. For each act, ALL ECJ
     # decisions citing it are downloaded (topic-complete, no keyword
-    # filtering, no year/count cap). Configure via ECJ_TOPIC_CELEX
-    # (comma-separated), e.g. "32016R0679" for the GDPR.
+    # filtering, no year/count cap). Configure in themen.txt ([rechtsakte])
+    # or via ECJ_TOPIC_CELEX (comma-separated), e.g. "32016R0679" = GDPR.
     topic_celex: list[str] = field(default_factory=list)
+
+    # Path of the loaded themes file (None = built-in defaults active)
+    themes_file_loaded: str | None = None
 
     # Subject area filter: EuroVoc descriptor labels (English)
     # Used for SPARQL EuroVoc filtering (works for legislation, often not for case-law)
@@ -300,8 +324,34 @@ class Config:
 
     @classmethod
     def from_env(cls) -> "Config":
-        """Create config from environment variables."""
+        """Create config from themen.txt and environment variables."""
         config = cls()
+
+        # User-editable themes file: overrides the built-in keyword lists
+        # and defines the topic legal acts. Environment variables (below)
+        # take precedence over the file.
+        themes_path = Path(
+            os.getenv("ECJ_THEMES_FILE")
+            or Path(__file__).parent.parent / "themen.txt"
+        )
+        if themes_path.exists():
+            try:
+                sections = parse_themes_file(themes_path)
+                if "schlagwoerter_de" in sections:
+                    config.subject_keywords_de = sections["schlagwoerter_de"]
+                if "schlagwoerter_en" in sections:
+                    config.subject_keywords_en = sections["schlagwoerter_en"]
+                if "schlagwoerter_fr" in sections:
+                    config.subject_keywords_fr = sections["schlagwoerter_fr"]
+                if "rechtsakte" in sections:
+                    # First token per line (allows "32016R0679 DSGVO" style)
+                    config.topic_celex = [
+                        entry.split()[0] for entry in sections["rechtsakte"]
+                    ]
+                config.themes_file_loaded = str(themes_path)
+            except Exception as e:
+                print(f"Warnung: Themen-Datei {themes_path} konnte nicht "
+                      f"gelesen werden ({e}) - eingebaute Listen aktiv.")
 
         # Override with environment variables if set
         if os.getenv("ECJ_INITIAL_YEAR"):
