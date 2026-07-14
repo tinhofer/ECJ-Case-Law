@@ -320,6 +320,11 @@ def _build_sparql_query(
         FILTER({" || ".join(conditions)})
         """
 
+    # NOTE: deliberately NO "?work a cdm:case-law" class constraint in the
+    # query. CELLAR types judgments with specific subclasses and the
+    # endpoint does no subclass inference, so the class triple matched only
+    # a stray handful of documents (0-10/month, zero judgments) - field log
+    # 2026-07-14. CELEX sector 6 alone defines case-law.
     return f"""
     PREFIX cdm: <http://publications.europa.eu/ontology/cdm#>
     PREFIX skos: <http://www.w3.org/2004/02/skos/core#>
@@ -327,9 +332,6 @@ def _build_sparql_query(
 
     SELECT DISTINCT ?celex ?title ?date ?ecli ?caseNumber
     WHERE {{
-        # Resource type: Case Law
-        ?work a cdm:case-law .
-
         # CELEX number (required)
         ?work {celex_predicate} ?celex .
         {celex_filter}
@@ -1219,8 +1221,9 @@ def _build_live_search_query(
 
     SELECT DISTINCT ?celex ?title ?date ?caseNumber
     WHERE {{
-        ?work a cdm:case-law .
+        # No class constraint (see _build_sparql_query); sector-6 filter below
         ?work {CELEX_PREDICATE} ?celex .
+        FILTER(STRSTARTS(STR(?celex), "6"))
 
         OPTIONAL {{ ?work cdm:work_date_document ?date . }}
         OPTIONAL {{

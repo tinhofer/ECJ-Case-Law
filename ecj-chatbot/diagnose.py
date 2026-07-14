@@ -84,34 +84,39 @@ def check_eurlex_sparql():
 
     # Step 1: minimal raw queries (no filters) - prove basic connectivity
     # and determine which CELEX property variant this endpoint uses.
-    def _probe_predicate(predicate: str):
+    def _run_probe(query: str):
         from SPARQLWrapper import SPARQLWrapper, JSON
         from data_acquisition import SPARQL_ENDPOINT, USER_AGENT
         sp = SPARQLWrapper(SPARQL_ENDPOINT, agent=USER_AGENT)
-        sp.setQuery(f"""
-        PREFIX cdm: <http://publications.europa.eu/ontology/cdm#>
-        SELECT ?celex ?date
-        WHERE {{
-            ?work a cdm:case-law .
-            ?work {predicate} ?celex .
-            ?work cdm:work_date_document ?date .
-        }}
-        LIMIT 3
-        """)
+        sp.setQuery("PREFIX cdm: <http://publications.europa.eu/ontology/cdm#>\n" + query)
         sp.setReturnFormat(JSON)
         sp.setTimeout(60)
         return sp.query().convert()["results"]["bindings"]
 
     minimal_ok = False
     try:
-        for predicate in ("cdm:resource_legal_id_celex", "cdm:resource_legal_celex"):
-            bindings = _probe_predicate(predicate)
-            print(f"       Probe {predicate}: {len(bindings)} Zeilen"
-                  + (f", z.B. celex={bindings[0].get('celex', {}).get('value')}, "
-                     f"date={bindings[0].get('date', {}).get('value')}"
-                     if bindings else ""))
+        # Per document type: do judgments (CJ) / opinions (CC) exist under
+        # the celex predicate, and do they carry work_date_document?
+        # (No "a cdm:case-law" class triple: CELLAR types judgments with
+        # subclasses and does no inference - the class constraint hid
+        # every judgment.)
+        for code in ("CJ", "CC"):
+            bindings = _run_probe(f"""
+            SELECT ?celex ?date
+            WHERE {{
+                ?work cdm:resource_legal_id_celex ?celex .
+                FILTER(STRSTARTS(STR(?celex), "62024{code}"))
+                OPTIONAL {{ ?work cdm:work_date_document ?date . }}
+            }}
+            LIMIT 3
+            """)
+            sample = ""
             if bindings:
                 minimal_ok = True
+                b = bindings[0]
+                sample = (f", z.B. celex={b.get('celex', {}).get('value')}, "
+                          f"date={b.get('date', {}).get('value', '(FEHLT)')}")
+            print(f"       Probe Dokumenttyp {code} (2024): {len(bindings)} Zeilen{sample}")
     except Exception as e:
         report(False, "EUR-Lex SPARQL-Endpoint (Basis-Abfrage)", str(e)[:200],
                "Internetverbindung prüfen; Firewall/Proxy muss "

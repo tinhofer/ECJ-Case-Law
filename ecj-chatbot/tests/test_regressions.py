@@ -179,6 +179,13 @@ class TestSparqlQueryBuilding:
         assert "OFFSET" not in query
         assert "skos:prefLabel" not in query
 
+    def test_no_case_law_class_constraint(self):
+        # CELLAR types judgments with subclasses and the endpoint does no
+        # inference: "?work a cdm:case-law" matched only a stray handful
+        # of documents (0-10/month, zero judgments) and hid every ruling.
+        query = _build_sparql_query(limit=10)
+        assert "a cdm:case-law" not in query
+
 
 class TestClientSideDocTypeFiltering:
     """Doc-type filtering and labeling from the CELEX code, done client-side."""
