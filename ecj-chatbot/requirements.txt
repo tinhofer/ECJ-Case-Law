@@ -3,6 +3,8 @@
 #
 # Install: pip install -r requirements.txt
 # If using Python 3.14, switch to 3.13: py -3.13 -m pip install -r requirements.txt
+#
+# Verify your setup afterwards with: python diagnose.py
 
 # Data Acquisition
 SPARQLWrapper>=2.0.0
@@ -14,24 +16,12 @@ lxml>=5.0.0
 chromadb>=0.5.23
 sentence-transformers>=2.2.0
 
-# RAG Framework
-langchain>=0.1.0
-langchain-community>=0.0.10
-langchain-anthropic>=0.1.0
+# LLM API
+anthropic>=0.40.0
 
-# LLM APIs
-anthropic>=0.18.0
-openai>=1.0.0
-
-# Web Framework
-fastapi>=0.109.0
-uvicorn>=0.27.0
-
-# Frontend (optional - for quick prototyping)
+# Web Frontend
 streamlit>=1.30.0
 
 # Utilities
 python-dotenv>=1.0.0
-pydantic>=2.5.0
-pydantic-settings>=2.0.0
 tqdm>=4.66.0

@@ -1,6 +1,11 @@
 # Dependencies
 node_modules/
 vendor/
+venv/
+.venv/
+
+# Downloaded case data & search index
+ecj-chatbot/data/
 .pnp
 .pnp.js
 

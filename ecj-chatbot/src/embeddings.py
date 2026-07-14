@@ -23,7 +23,6 @@ except Exception as e:
         )
     raise
 
-from sentence_transformers import SentenceTransformer
 from tqdm import tqdm
 
 from data_acquisition import CaseLawDocument, load_documents_from_disk
@@ -49,7 +48,8 @@ class CaseLawVectorStore:
         collection_name: str = "ecj_case_law",
         embedding_model: str = DEFAULT_EMBEDDING_MODEL,
         chunk_size: int = 1000,
-        chunk_overlap: int = 200
+        chunk_overlap: int = 200,
+        embedding_function=None
     ):
         """
         Initialize the vector store.
@@ -60,6 +60,9 @@ class CaseLawVectorStore:
             embedding_model: HuggingFace model name for embeddings
             chunk_size: Size of text chunks in characters
             chunk_overlap: Overlap between chunks
+            embedding_function: Optional ChromaDB embedding function override
+                (mainly for testing); default is a SentenceTransformer
+                function using `embedding_model`
         """
 
         self.persist_directory = Path(persist_directory)
@@ -68,9 +71,17 @@ class CaseLawVectorStore:
         self.chunk_size = chunk_size
         self.chunk_overlap = chunk_overlap
 
-        # Initialize embedding model
-        print(f"Loading embedding model: {embedding_model}")
-        self.embedding_model = SentenceTransformer(embedding_model)
+        # Embedding function: previously the SentenceTransformer model was
+        # loaded but never wired into ChromaDB, so all embeddings silently
+        # used ChromaDB's English-only default model. Passing the function
+        # explicitly makes the configured multilingual model actually used.
+        if embedding_function is None:
+            from chromadb.utils import embedding_functions
+            print(f"Loading embedding model: {embedding_model}")
+            embedding_function = embedding_functions.SentenceTransformerEmbeddingFunction(
+                model_name=embedding_model
+            )
+        self.embedding_function = embedding_function
 
         # Initialize ChromaDB
         self.client = chromadb.PersistentClient(
@@ -80,7 +91,8 @@ class CaseLawVectorStore:
 
         self.collection = self.client.get_or_create_collection(
             name=collection_name,
-            metadata={"description": "EuGH Case Law Vector Store"}
+            metadata={"description": "EuGH Case Law Vector Store"},
+            embedding_function=self.embedding_function
         )
 
     def _chunk_text(self, text: str) -> list[str]:
@@ -103,12 +115,15 @@ class CaseLawVectorStore:
         while start < len(text):
             end = start + self.chunk_size
 
-            # Try to break at sentence boundary
+            # Try to break at a sentence boundary, but only in the second
+            # half of the window. Accepting a boundary near the window start
+            # previously moved `start` BACKWARDS (end - overlap < start),
+            # which made indexing loop forever on some documents.
             if end < len(text):
-                # Look for sentence endings
+                min_break = start + self.chunk_size // 2
                 for sep in ['. ', '.\n', '? ', '!\n']:
                     last_sep = text[start:end].rfind(sep)
-                    if last_sep != -1:
+                    if last_sep != -1 and start + last_sep >= min_break:
                         end = start + last_sep + len(sep)
                         break
 
@@ -116,7 +131,11 @@ class CaseLawVectorStore:
             if chunk:
                 chunks.append(chunk)
 
-            start = end - self.chunk_overlap
+            if end >= len(text):
+                break
+
+            # Guarantee forward progress even with a large overlap
+            start = max(end - self.chunk_overlap, start + 1)
 
         return chunks
 
@@ -159,15 +178,25 @@ class CaseLawVectorStore:
                 "total_chunks": len(chunks)
             })
 
-        # Add to ChromaDB
+        # Upsert into ChromaDB. `add` raises on duplicate IDs, which crashed
+        # every index rebuild over existing data; upsert is idempotent.
         if ids:
-            self.collection.add(
+            self.collection.upsert(
                 ids=ids,
                 documents=documents,
                 metadatas=metadatas
             )
 
         return len(chunks)
+
+    def get_indexed_celex(self) -> set[str]:
+        """Return the CELEX numbers of all documents already in the index."""
+        try:
+            result = self.collection.get(include=[])
+            ids = result.get("ids", []) if result else []
+        except Exception:
+            return set()
+        return {chunk_id.rsplit("_chunk_", 1)[0] for chunk_id in ids}
 
     def add_documents_batch(
         self,
@@ -269,7 +298,8 @@ class CaseLawVectorStore:
 def build_index_from_data_dir(
     data_dir: Path,
     index_dir: Path,
-    embedding_model: str = DEFAULT_EMBEDDING_MODEL
+    embedding_model: str = DEFAULT_EMBEDDING_MODEL,
+    embedding_function=None
 ) -> CaseLawVectorStore:
     """
     Build a vector store index from downloaded case law data.
@@ -285,10 +315,17 @@ def build_index_from_data_dir(
 
     store = CaseLawVectorStore(
         persist_directory=index_dir,
-        embedding_model=embedding_model
+        embedding_model=embedding_model,
+        embedding_function=embedding_function
     )
 
-    documents = load_documents_from_disk(data_dir)
+    # Only index documents that aren't in the collection yet, so that
+    # rebuilding after an update is fast instead of re-embedding everything.
+    already_indexed = store.get_indexed_celex()
+    documents = (
+        doc for doc in load_documents_from_disk(data_dir)
+        if doc.celex not in already_indexed
+    )
     store.add_documents_batch(documents)
 
     stats = store.get_collection_stats()

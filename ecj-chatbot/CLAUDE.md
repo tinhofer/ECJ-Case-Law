@@ -8,7 +8,7 @@ Entwicklung eines RAG-basierten Chatbots, der Fragen **ausschließlich** auf Gru
 
 ## Aktueller Stand
 
-**Branch:** `claude/expand-cases-filter-areas-ENgfc`
+**Branch:** `claude/ecj-case-law-debug-odvm7l` (Debugging/Stabilisierung)
 
 **Commits:**
 1. ✅ `feat: Add EuGH case law chatbot with RAG architecture`
@@ -17,7 +17,24 @@ Entwicklung eines RAG-basierten Chatbots, der Fragen **ausschließlich** auf Gru
 4. ✅ `feat: Add configurable data paths for cloud storage support`
 5. ✅ `feat: Expand cases to 2018 and filter by employment, data protection, and discrimination areas`
 
-**Status:** Feature-komplett, alle 65 Tests bestanden
+6. ✅ `fix: Make the tool actually work` — Stabilisierung (siehe unten)
+
+**Status:** 98 Tests bestanden
+
+### Stabilisierung (2026-07)
+
+Behobene Fehler, die die App bisher unbenutzbar machten:
+- SPARQL-Fehler wurden verschluckt → leerer Index ohne Fehlermeldung. Jetzt: Retries + `DataAcquisitionError` + Fehleranzeige in der UI.
+- Erstdownload war unbegrenzt (alle Dokumenttypen seit 2018, >10h). Jetzt: nur EuGH-Urteile (CELEX `CJ`), Kappung über `max_initial_cases` (Default 1500, neueste zuerst), Fortschrittsbalken.
+- Endlosschleife im Text-Chunker (Indizierung hing für immer), wenn die einzige Satzgrenze am Fensteranfang lag.
+- Deutscher Stichwort-Filter verwarf alle EN/FR-Dokumente. Jetzt: mehrsprachige Keyword-Listen + Fail-Open.
+- Vom Filter verworfene Fälle wurden bei jedem Start neu heruntergeladen. Jetzt: `rejected_celex` im Checkpoint.
+- `collection.add` stürzte bei Index-Rebuild über vorhandene Daten ab. Jetzt: `upsert` + Skip bereits indizierter CELEX.
+- Das multilinguale Embedding-Modell wurde geladen, aber nie benutzt (ChromaDB nahm still sein englisches Default-Modell). Jetzt: `SentenceTransformerEmbeddingFunction` an der Collection.
+- EUR-Lex-Requests ohne Browser-User-Agent (teils blockiert). Jetzt: Session mit UA + Retries.
+- `requirements.txt` von ungenutzten Paketen (langchain, openai, fastapi) befreit.
+- Neues Diagnose-Werkzeug: `python diagnose.py` prüft Python, Pakete, EUR-Lex, API-Key, ChromaDB.
+- Standard-LLM: `claude-opus-4-8` (das alte `claude-sonnet-4-20250514` ist deprecated).
 
 ## Architektur
 

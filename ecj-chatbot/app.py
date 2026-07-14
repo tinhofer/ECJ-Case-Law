@@ -31,12 +31,42 @@ from embeddings import CaseLawVectorStore, build_index_from_data_dir
 from data_acquisition import (
     incremental_update,
     load_checkpoint,
-    download_case_law_batch
+    download_case_law_batch,
+    DataAcquisitionError
 )
 
 
 # Get configuration
 config = get_config()
+
+
+def _make_progress_callback(label: str):
+    """Create a download progress callback that drives a Streamlit progress bar."""
+    progress_bar = st.progress(0, text=label)
+
+    def callback(done: int, total: int, celex: str):
+        if total <= 0:
+            return
+        fraction = min(done / total, 1.0)
+        text = f"{label} ({done}/{total})"
+        if celex:
+            text += f" – {celex}"
+        progress_bar.progress(fraction, text=text)
+
+    return callback
+
+
+def show_data_error(e: Exception):
+    """Display a data acquisition error with remediation hints."""
+    st.error(
+        f"**Fehler beim Datenabruf von EUR-Lex:**\n\n{e}\n\n"
+        "**Mögliche Lösungen:**\n"
+        "- Internetverbindung prüfen\n"
+        "- Firmen-Firewall/Proxy: Zugriff auf `publications.europa.eu` und "
+        "`eur-lex.europa.eu` freigeben\n"
+        "- Später erneut versuchen (EUR-Lex kann zeitweise überlastet sein)\n"
+        "- Zur Diagnose im Terminal ausführen: `python diagnose.py`"
+    )
 
 
 def initialize_data_and_index(auto_update: bool = True) -> bool:
@@ -67,7 +97,7 @@ def initialize_data_and_index(auto_update: bool = True) -> bool:
     # Case 1: Data exists but no index (e.g., synced from cloud on new device)
     if has_data and not index_exists:
         st.info(f"Daten gefunden ({len(existing_cases)} Entscheidungen), aber kein Index. Erstelle Index...")
-        with st.spinner("Indiziere Dokumente..."):
+        with st.spinner("Indiziere Dokumente (beim ersten Mal wird das Embedding-Modell heruntergeladen)..."):
             build_index_from_data_dir(cases_dir, index_dir)
         st.success("Index erstellt!")
         return True
@@ -75,23 +105,40 @@ def initialize_data_and_index(auto_update: bool = True) -> bool:
     # Case 2: No data - initial download
     if not has_data:
         initial_year = config.initial_year
-        subject_areas = config.subject_areas
-        subject_keywords = config.subject_keywords_de
-        kw_info = f" (Stichwort-Filter: {len(subject_keywords)} Begriffe)" if subject_keywords else ""
-        st.info(f"Erste Initialisierung: Lade ALLE EuGH-Entscheidungen seit {initial_year}{kw_info}...")
-        with st.spinner("Lade Daten von EUR-Lex (paginiert, kann einige Minuten dauern)..."):
+        st.info(
+            f"Erste Initialisierung: Lade bis zu {config.max_initial_cases} "
+            f"EuGH-Urteile seit {initial_year} (neueste zuerst). "
+            "Dies dauert je nach Anzahl einige Minuten bis Stunden – der "
+            "Fortschritt wird unten angezeigt und bereits geladene "
+            "Entscheidungen bleiben bei einem Abbruch erhalten."
+        )
+        try:
             downloaded = download_case_law_batch(
                 output_dir=cases_dir,
                 year_from=initial_year,
                 delay_seconds=config.download_delay,
-                subject_areas=subject_areas,
-                subject_keywords_de=subject_keywords
+                subject_areas=config.active_subject_areas,
+                subject_keywords=config.subject_keywords,
+                max_cases=config.max_initial_cases,
+                celex_doc_types=config.celex_doc_types,
+                progress_callback=_make_progress_callback("Lade Entscheidungen von EUR-Lex")
             )
-            st.success(f"{downloaded} Entscheidungen heruntergeladen.")
+        except DataAcquisitionError as e:
+            show_data_error(e)
+            return False
+
+        if downloaded == 0:
+            st.error(
+                "Es konnten keine Entscheidungen heruntergeladen werden. "
+                "Bitte führen Sie `python diagnose.py` aus, um die Ursache zu finden."
+            )
+            return False
+
+        st.success(f"{downloaded} Entscheidungen heruntergeladen.")
 
         # Build initial index
         st.info("Erstelle Suchindex...")
-        with st.spinner("Indiziere Dokumente..."):
+        with st.spinner("Indiziere Dokumente (beim ersten Mal wird das Embedding-Modell heruntergeladen)..."):
             build_index_from_data_dir(cases_dir, index_dir)
             st.success("Index erstellt.")
 
@@ -100,17 +147,24 @@ def initialize_data_and_index(auto_update: bool = True) -> bool:
     # Case 3: Data and index exist - check for updates
     if auto_update:
         checkpoint = load_checkpoint(cases_dir)
-        last_update = checkpoint.get("last_download_date", "Nie")
+        last_update = checkpoint.get("last_download_date") or "Nie"
 
-        with st.spinner(f"Prüfe auf neue Entscheidungen (letztes Update: {last_update[:10] if last_update != 'Nie' else last_update})..."):
-            new_cases = incremental_update(
-                data_dir=cases_dir,
-                delay_seconds=config.download_delay,
-                max_new_cases=config.update_limit,
-                subject_areas=config.subject_areas,
-                subject_keywords_de=config.subject_keywords_de,
-                initial_year=config.initial_year
-            )
+        try:
+            with st.spinner(f"Prüfe auf neue Entscheidungen (letztes Update: {last_update[:10]})..."):
+                new_cases = incremental_update(
+                    data_dir=cases_dir,
+                    delay_seconds=config.download_delay,
+                    max_new_cases=config.update_limit,
+                    subject_areas=config.active_subject_areas,
+                    subject_keywords=config.subject_keywords,
+                    initial_year=config.initial_year,
+                    max_initial_cases=config.max_initial_cases,
+                    celex_doc_types=config.celex_doc_types
+                )
+        except DataAcquisitionError as e:
+            # Existing data still works offline - warn but continue
+            st.warning(f"Update übersprungen (EUR-Lex nicht erreichbar): {e}")
+            return True
 
         if new_cases > 0:
             st.info(f"{new_cases} neue Entscheidungen gefunden. Aktualisiere Index...")
@@ -139,10 +193,13 @@ def init_chatbot(auto_update: bool = False) -> EuGHChatbot | None:
 
     index_dir = config.index_dir
 
-    # Initialize data and index if needed (only on first run)
+    # Initialize data and index if needed (only on first run).
+    # Only mark as initialized on success, so a failed download is retried
+    # on the next rerun instead of leaving the app permanently empty.
     if "initialized" not in st.session_state:
         if not index_dir.exists() or not any(index_dir.iterdir()):
-            initialize_data_and_index(auto_update=auto_update)
+            if not initialize_data_and_index(auto_update=auto_update):
+                return None
         st.session_state.initialized = True
 
     if "chatbot" not in st.session_state:
@@ -204,7 +261,7 @@ def main():
 
     st.set_page_config(
         page_title="EuGH Chatbot",
-        page_icon="EU Flag",
+        page_icon="⚖️",
         layout="wide"
     )
 
@@ -265,15 +322,21 @@ def main():
         # Update button
         st.header("Daten aktualisieren")
         if st.button("Neue Entscheidungen laden", help="Prüft EUR-Lex auf neue Entscheidungen"):
-            with st.spinner("Suche neue Entscheidungen..."):
-                new_cases = incremental_update(
-                    data_dir=config.cases_dir,
-                    delay_seconds=config.download_delay,
-                    max_new_cases=config.update_limit,
-                    subject_areas=config.subject_areas,
-                    subject_keywords_de=config.subject_keywords_de,
-                    initial_year=config.initial_year
-                )
+            try:
+                with st.spinner("Suche neue Entscheidungen..."):
+                    new_cases = incremental_update(
+                        data_dir=config.cases_dir,
+                        delay_seconds=config.download_delay,
+                        max_new_cases=config.update_limit,
+                        subject_areas=config.active_subject_areas,
+                        subject_keywords=config.subject_keywords,
+                        initial_year=config.initial_year,
+                        max_initial_cases=config.max_initial_cases,
+                        celex_doc_types=config.celex_doc_types
+                    )
+            except DataAcquisitionError as e:
+                show_data_error(e)
+                new_cases = 0
             if new_cases > 0:
                 st.success(f"{new_cases} neue Entscheidungen geladen!")
                 # Rebuild index
