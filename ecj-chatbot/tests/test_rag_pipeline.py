@@ -80,13 +80,55 @@ class TestFormatContext:
 def _make_chatbot(**kwargs):
     """Create an EuGHChatbot with mocked dependencies."""
     mock_store = kwargs.pop("vector_store", MagicMock())
+    kwargs.setdefault("cases_dir", "/nonexistent-cases-dir")
     with patch("rag_pipeline.Anthropic"):
         bot = EuGHChatbot(
             vector_store=mock_store,
             api_key="test-key",
             **kwargs,
         )
+    bot.client = MagicMock()
     return bot
+
+
+def _text_response(text, stop_reason="end_turn"):
+    """Build a fake final message containing one text block."""
+    block = MagicMock()
+    block.type = "text"
+    block.text = text
+    resp = MagicMock()
+    resp.content = [block]
+    resp.stop_reason = stop_reason
+    return resp
+
+
+def _tool_use_response(name, tool_input, tool_id="toolu_1"):
+    """Build a fake final message requesting one tool call."""
+    block = MagicMock()
+    block.type = "tool_use"
+    block.name = name
+    block.input = tool_input
+    block.id = tool_id
+    resp = MagicMock()
+    resp.content = [block]
+    resp.stop_reason = "tool_use"
+    return resp
+
+
+def _fake_stream(bot, responses):
+    """Make bot.client.messages.stream return the given messages in order."""
+    contexts = []
+    for resp in responses:
+        inner = MagicMock()
+        inner.text_stream = iter(
+            b.text for b in resp.content if getattr(b, "type", "") == "text"
+        )
+        inner.get_final_message = MagicMock(return_value=resp)
+        ctx = MagicMock()
+        ctx.__enter__ = MagicMock(return_value=inner)
+        ctx.__exit__ = MagicMock(return_value=False)
+        contexts.append(ctx)
+    bot.client.messages.stream = MagicMock(side_effect=contexts)
 
 
 class TestExtractSearchTerms:
@@ -142,16 +184,15 @@ class TestEuGHChatbot:
         bot.clear_history()
         assert bot.conversation_history == []
 
-    def test_answer_no_results(self):
+    def test_answer_no_tools_no_sources(self):
         bot = _make_chatbot()
-        bot.vector_store.search.return_value = []
-        bot.vector_store.get_unique_cases.return_value = []
+        _fake_stream(bot, [_text_response("Bitte präzisieren Sie Ihre Frage.")])
         result = bot.answer("test question", enable_live_fallback=False)
         assert result["context_used"] is False
         assert result["sources"] == []
-        assert "keine relevanten" in result["answer"].lower()
+        assert "präzisieren" in result["answer"]
 
-    def test_answer_with_results(self):
+    def test_answer_with_local_search_tool(self):
         bot = _make_chatbot()
         search_results = [{
             "text": "Judgment text.",
@@ -168,35 +209,77 @@ class TestEuGHChatbot:
         bot.vector_store.search.return_value = search_results
         bot.vector_store.get_unique_cases.return_value = search_results
 
-        mock_response = MagicMock()
-        mock_response.content = [MagicMock(text="Claude's answer about Schrems II.")]
-        bot.client.messages.create.return_value = mock_response
+        _fake_stream(bot, [
+            _tool_use_response("search_local_judgments", {"query": "Datenschutz"}),
+            _text_response("Claude's answer about Schrems II."),
+        ])
 
         result = bot.answer("Datenschutz?", enable_live_fallback=False)
         assert result["context_used"] is True
         assert len(result["sources"]) == 1
         assert result["sources"][0]["celex"] == "62020CJ0311"
         assert "Claude's answer" in result["answer"]
+        assert result["used_live_fallback"] is False
 
     def test_answer_appends_to_conversation_history(self):
         bot = _make_chatbot()
-        bot.vector_store.search.return_value = [{
-            "text": "text",
-            "metadata": {"celex": "X", "case_number": "", "title": "",
-                         "date": "", "eurlex_url": "", "curia_url": "",
-                         "language": "DE", "court": "", "document_type": ""},
-            "distance": 0.5,
-        }]
-        bot.vector_store.get_unique_cases.return_value = bot.vector_store.search.return_value
-
-        mock_response = MagicMock()
-        mock_response.content = [MagicMock(text="Answer")]
-        bot.client.messages.create.return_value = mock_response
+        _fake_stream(bot, [_text_response("Answer")])
 
         bot.answer("Question?", enable_live_fallback=False)
         assert len(bot.conversation_history) == 2
-        assert bot.conversation_history[0]["role"] == "user"
+        assert bot.conversation_history[0] == {"role": "user", "content": "Question?"}
         assert bot.conversation_history[1]["role"] == "assistant"
+        assert "Answer" in bot.conversation_history[1]["content"]
+
+    def test_answer_full_text_tool_marks_source(self, tmp_path):
+        import json as _json
+        case = {
+            "celex": "62020CJ0311", "title": "Schrems II", "date": "2020-07-16",
+            "case_number": "C-311/18", "court": "Court of Justice",
+            "document_type": "Judgment", "text": "Volltext " * 200,
+            "eurlex_url": "https://eur-lex.europa.eu/x", "curia_url": None,
+            "ecli": None, "keywords": [], "language": "DE",
+        }
+        (tmp_path / "62020CJ0311.json").write_text(_json.dumps(case), encoding="utf-8")
+        bot = _make_chatbot(cases_dir=tmp_path)
+
+        _fake_stream(bot, [
+            _tool_use_response("get_full_judgment", {"reference": "C-311/18"}),
+            _text_response("Analyse des Urteils."),
+        ])
+
+        result = bot.answer("Analysiere C-311/18", enable_live_fallback=False)
+        assert result["sources"][0]["celex"] == "62020CJ0311"
+        assert result["sources"][0]["full_text"] is True
+        # The tool result handed to Claude contained the full text marker
+        second_call = bot.client.messages.stream.call_args_list[1]
+        tool_result_msg = second_call.kwargs["messages"][-1]
+        assert "VOLLSTÄNDIGER TEXT" in tool_result_msg["content"][0]["content"]
+
+    def test_answer_live_tool_only_when_enabled(self):
+        bot = _make_chatbot()
+        _fake_stream(bot, [_text_response("ok"), _text_response("ok")])
+        bot.answer("Frage?", enable_live_fallback=False)
+        tools_off = bot.client.messages.stream.call_args_list[0].kwargs["tools"]
+        assert all(t["name"] != "search_eurlex_live" for t in tools_off)
+
+        _fake_stream(bot, [_text_response("ok")])
+        bot.answer("Frage?", enable_live_fallback=True)
+        tools_on = bot.client.messages.stream.call_args_list[0].kwargs["tools"]
+        assert any(t["name"] == "search_eurlex_live" for t in tools_on)
+
+    def test_answer_stops_at_iteration_limit(self):
+        bot = _make_chatbot()
+        bot.vector_store.search.return_value = []
+        bot.vector_store.get_unique_cases.return_value = []
+        # Model keeps requesting tools forever
+        _fake_stream(bot, [
+            _tool_use_response("search_local_judgments", {"query": f"q{i}"})
+            for i in range(bot.MAX_TOOL_ITERATIONS + 2)
+        ])
+        result = bot.answer("Frage?", enable_live_fallback=False)
+        assert bot.client.messages.stream.call_count == bot.MAX_TOOL_ITERATIONS
+        assert "Recherche-Limit" in result["answer"]
 
 
 class TestSearchRelevantCases:

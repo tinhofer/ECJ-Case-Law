@@ -253,7 +253,8 @@ def init_chatbot(auto_update: bool = False) -> EuGHChatbot | None:
 
         try:
             st.session_state.chatbot = create_chatbot(
-                index_dir, api_key, subject_areas=config.subject_areas
+                index_dir, api_key, subject_areas=config.subject_areas,
+                cases_dir=config.cases_dir
             )
         except Exception as e:
             st.error(f"Fehler beim Initialisieren des Chatbots: {e}")
@@ -464,7 +465,7 @@ def main():
                 # Get live fallback setting
                 enable_live_fallback = st.session_state.get("enable_live_fallback", True)
 
-                with st.spinner("Suche relevante Entscheidungen..."):
+                with st.spinner("Recherchiere in der Rechtsprechung (gründliche Fragen dauern 60-90 Sekunden)..."):
                     response_placeholder = st.empty()
                     full_response = ""
 
