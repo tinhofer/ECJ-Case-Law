@@ -132,6 +132,62 @@ class TestCheckpointNotACase:
         assert cfg.get_status()["cases_count"] == 0
 
 
+class TestRetrievalDepth:
+    """Groundwork for deeper answers: multiple passages per case and
+    full-text loading of explicitly referenced cases."""
+
+    def _make_bot(self, tmp_path):
+        from unittest.mock import MagicMock, patch
+        from rag_pipeline import EuGHChatbot
+        with patch("rag_pipeline.Anthropic"):
+            return EuGHChatbot(
+                vector_store=MagicMock(), api_key="sk-test",
+                model="claude-opus-4-8", cases_dir=tmp_path,
+            )
+
+    def test_attach_additional_chunks_combines_passages(self, tmp_path):
+        bot = self._make_bot(tmp_path)
+        all_results = [
+            {"metadata": {"celex": "A"}, "text": "chunk1", "distance": 0.1},
+            {"metadata": {"celex": "B"}, "text": "other", "distance": 0.2},
+            {"metadata": {"celex": "A"}, "text": "chunk2", "distance": 0.3},
+            {"metadata": {"celex": "A"}, "text": "chunk3", "distance": 0.4},
+            {"metadata": {"celex": "A"}, "text": "chunk4", "distance": 0.5},
+        ]
+        unique = [{"metadata": {"celex": "A"}, "text": "chunk1", "distance": 0.1}]
+        enriched = bot._attach_additional_chunks(unique, all_results, max_chunks=3)
+        assert enriched[0]["text"] == "chunk1\n[...]\nchunk2\n[...]\nchunk3"
+        # single-chunk case stays untouched
+        unique_b = [{"metadata": {"celex": "B"}, "text": "other", "distance": 0.2}]
+        assert bot._attach_additional_chunks(unique_b, all_results)[0]["text"] == "other"
+
+    def test_find_referenced_cases_by_case_number_and_celex(
+            self, tmp_path, sample_case_dict):
+        (tmp_path / "62020CJ0311.json").write_text(
+            json.dumps(sample_case_dict), encoding="utf-8")
+        bot = self._make_bot(tmp_path)
+        # by case number (with flexible spacing), by CELEX, and a miss
+        for question, expect in [
+            ("Was sagt C-311/18 zur Datenübermittlung?", 1),
+            ("Bitte analysiere 62020CJ0311 im Detail.", 1),
+            ("Was sagt die Rs. C-999/99?", 0),
+            ("Allgemeine Frage ohne Bezug", 0),
+        ]:
+            docs = bot._find_referenced_cases(question)
+            assert len(docs) == expect, question
+        docs = bot._find_referenced_cases("C-311/18 und nochmal C-311/18")
+        assert len(docs) == 1  # deduplicated
+
+    def test_full_text_results_capped_and_marked(self, tmp_path, sample_case_dict):
+        from data_acquisition import CaseLawDocument
+        bot = self._make_bot(tmp_path)
+        doc = CaseLawDocument(**{**sample_case_dict, "text": "X" * 400_000})
+        results = bot._full_text_results([doc])
+        assert results[0]["source"] == "full_text"
+        assert len(results[0]["text"]) <= bot.MAX_FULL_TEXT_CHARS + 50
+        assert results[0]["metadata"]["celex"] == sample_case_dict["celex"]
+
+
 class TestTopicCorpora:
     """Topic corpora: ALL decisions citing a given legal act."""
 
