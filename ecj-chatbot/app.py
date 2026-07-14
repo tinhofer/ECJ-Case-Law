@@ -32,8 +32,16 @@ from data_acquisition import (
     incremental_update,
     load_checkpoint,
     download_case_law_batch,
-    DataAcquisitionError
+    DataAcquisitionError,
+    CHECKPOINT_FILE
 )
+
+
+def _case_files(cases_dir: Path) -> list[Path]:
+    """Actual case documents on disk (excluding the bookkeeping checkpoint)."""
+    if not cases_dir.exists():
+        return []
+    return [f for f in cases_dir.glob("*.json") if f.name != CHECKPOINT_FILE]
 
 
 # Get configuration
@@ -87,8 +95,10 @@ def initialize_data_and_index(auto_update: bool = True) -> bool:
     cases_dir = config.cases_dir
     index_dir = config.index_dir
 
-    # Check if we have any data
-    existing_cases = list(cases_dir.glob("*.json"))
+    # Check if we have any data. The checkpoint file must not count:
+    # a failed download leaves it behind, and counting it as a "case"
+    # made the app skip the download entirely and build an empty index.
+    existing_cases = _case_files(cases_dir)
     has_data = len(existing_cases) > 0
 
     # Check if index exists
@@ -196,8 +206,11 @@ def init_chatbot(auto_update: bool = False) -> EuGHChatbot | None:
     # Initialize data and index if needed (only on first run).
     # Only mark as initialized on success, so a failed download is retried
     # on the next rerun instead of leaving the app permanently empty.
+    # Also (re-)initialize when there are no actual case documents, even
+    # if an (empty) index directory exists from an earlier failed run.
     if "initialized" not in st.session_state:
-        if not index_dir.exists() or not any(index_dir.iterdir()):
+        index_missing = not index_dir.exists() or not any(index_dir.iterdir())
+        if index_missing or not _case_files(config.cases_dir):
             if not initialize_data_and_index(auto_update=auto_update):
                 return None
         st.session_state.initialized = True

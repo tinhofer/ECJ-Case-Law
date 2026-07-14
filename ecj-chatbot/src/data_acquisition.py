@@ -955,6 +955,8 @@ def load_documents_from_disk(data_dir: Path) -> Iterator[CaseLawDocument]:
 
     data_dir = Path(data_dir)
     for json_file in data_dir.glob("*.json"):
+        if json_file.name == CHECKPOINT_FILE:
+            continue  # bookkeeping file, not a case document
         try:
             with open(json_file, 'r', encoding='utf-8') as f:
                 data = json.load(f)
