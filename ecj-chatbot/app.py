@@ -32,6 +32,7 @@ from data_acquisition import (
     incremental_update,
     load_checkpoint,
     download_case_law_batch,
+    download_topic_corpora,
     DataAcquisitionError,
     CHECKPOINT_FILE
 )
@@ -75,6 +76,28 @@ def show_data_error(e: Exception):
         "- Später erneut versuchen (EUR-Lex kann zeitweise überlastet sein)\n"
         "- Zur Diagnose im Terminal ausführen: `python diagnose.py`"
     )
+
+
+def download_topics_if_configured() -> int:
+    """Download topic corpora (all decisions citing configured acts).
+
+    Returns the number of newly downloaded documents; EUR-Lex problems
+    are shown as a warning instead of aborting (the main corpus works).
+    """
+    if not config.topic_celex:
+        return 0
+    try:
+        return download_topic_corpora(
+            output_dir=config.cases_dir,
+            topic_celex=config.topic_celex,
+            delay_seconds=config.download_delay,
+            celex_doc_types=config.celex_doc_types,
+            progress_callback=_make_progress_callback(
+                f"Lade Themen-Korpus ({', '.join(config.topic_celex)})")
+        )
+    except DataAcquisitionError as e:
+        st.warning(f"Themen-Korpus übersprungen (EUR-Lex nicht erreichbar): {e}")
+        return 0
 
 
 def initialize_data_and_index(auto_update: bool = True) -> bool:
@@ -137,6 +160,9 @@ def initialize_data_and_index(auto_update: bool = True) -> bool:
             show_data_error(e)
             return False
 
+        # Topic corpora (all decisions citing configured legal acts)
+        downloaded += download_topics_if_configured()
+
         if downloaded == 0:
             st.error(
                 "Es konnten keine Entscheidungen heruntergeladen werden. "
@@ -175,6 +201,8 @@ def initialize_data_and_index(auto_update: bool = True) -> bool:
             # Existing data still works offline - warn but continue
             st.warning(f"Update übersprungen (EUR-Lex nicht erreichbar): {e}")
             return True
+
+        new_cases += download_topics_if_configured()
 
         if new_cases > 0:
             st.info(f"{new_cases} neue Entscheidungen gefunden. Aktualisiere Index...")
@@ -350,6 +378,7 @@ def main():
             except DataAcquisitionError as e:
                 show_data_error(e)
                 new_cases = 0
+            new_cases += download_topics_if_configured()
             if new_cases > 0:
                 st.success(f"{new_cases} neue Entscheidungen geladen!")
                 # Rebuild index

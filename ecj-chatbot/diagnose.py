@@ -141,13 +141,42 @@ def check_eurlex_sparql():
             return cases
         report(False, "EUR-Lex SPARQL-Endpoint (App-Abfrage)",
                "Basis-Abfrage OK, aber die gefilterte Abfrage liefert 0 Ergebnisse",
-               "Bitte diese komplette Ausgabe (inkl. 'Roh-Beispiel'-Zeile) "
-               "an den Entwickler weitergeben")
+               "Bitte diese komplette Ausgabe an den Entwickler weitergeben")
         return []
     except Exception as e:
         report(False, "EUR-Lex SPARQL-Endpoint (App-Abfrage)", str(e)[:200],
                "Bitte diese komplette Ausgabe an den Entwickler weitergeben")
         return []
+
+
+def check_topic_query():
+    """Check the citation-based topic query (example: GDPR) and report
+    counts for any configured topic acts."""
+    from data_acquisition import get_citing_case_law_metadata
+    from config import get_config
+
+    acts = {"32016R0679 (DSGVO)": "32016R0679"}
+    for act in get_config().topic_celex:
+        acts.setdefault(f"{act} (konfiguriert)", act)
+
+    ok = True
+    for label, act in acts.items():
+        try:
+            cases = get_citing_case_law_metadata(act)
+            if cases:
+                newest = cases[0]
+                report(True, f"Themen-Abfrage {label}",
+                       f"{len(cases)} EuGH-Urteile zitieren diesen Rechtsakt, "
+                       f"neuestes: {newest.get('celex')} ({newest.get('date')})")
+            else:
+                ok = False
+                report(False, f"Themen-Abfrage {label}",
+                       "0 Urteile gefunden",
+                       "Bitte diese Ausgabe an den Entwickler weitergeben")
+        except Exception as e:
+            ok = False
+            report(False, f"Themen-Abfrage {label}", str(e)[:200])
+    return ok
 
 
 def _probe_url(label: str, url: str, headers: dict | None = None):
@@ -337,6 +366,7 @@ def main():
     print("\n--- 2. EUR-Lex (Rechtsprechungs-Daten) " + "-" * 29)
     cases = check_eurlex_sparql()
     check_eurlex_document(cases)
+    check_topic_query()
 
     print("\n--- 3. Anthropic API (Claude) " + "-" * 38)
     check_anthropic()
