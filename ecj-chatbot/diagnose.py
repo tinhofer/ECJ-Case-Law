@@ -191,18 +191,73 @@ def check_eurlex_document(cases: list):
     return False
 
 
+def _mask_key(key: str) -> str:
+    """Show enough of a key to compare against the Console, safely."""
+    if len(key) <= 18:
+        return f"{key[:6]}... ({len(key)} Zeichen)"
+    return f"{key[:14]}...{key[-4:]} ({len(key)} Zeichen)"
+
+
 def check_anthropic():
-    from dotenv import load_dotenv
-    load_dotenv()
-    api_key = os.getenv("ANTHROPIC_API_KEY")
+    from dotenv import dotenv_values
+
+    env_file = Path(__file__).parent / ".env"
+
+    # Where could a key come from? Show every source so conflicts are visible.
+    system_key = os.environ.get("ANTHROPIC_API_KEY")  # set before .env loading?
+    file_key = None
+    if env_file.exists():
+        file_key = (dotenv_values(env_file).get("ANTHROPIC_API_KEY") or "").strip() or None
+    else:
+        # Classic Windows trap: Notepad saved the file as ".env.txt"
+        txt_variant = Path(__file__).parent / ".env.txt"
+        if txt_variant.exists():
+            report(False, "ANTHROPIC_API_KEY",
+                   "Datei heißt '.env.txt' statt '.env'",
+                   'Im Terminal umbenennen: ren .env.txt .env')
+            return False
+        report(False, "ANTHROPIC_API_KEY",
+               "Datei .env existiert nicht",
+               "Anlegen mit: copy .env.example .env  und dann den Schlüssel eintragen")
+        return False
+
+    if file_key:
+        print(f"       Schlüssel in .env:              {_mask_key(file_key)}")
+    else:
+        print("       Schlüssel in .env:              (keiner eingetragen)")
+    if system_key and system_key != file_key:
+        print(f"       Schlüssel aus Windows-Umgebung: {_mask_key(system_key)}")
+        warn("Konflikt: eine system-weite Umgebungsvariable ANTHROPIC_API_KEY "
+             "existiert und unterscheidet sich von .env",
+             "Die App verwendet ab jetzt die .env-Datei. Die alte Variable "
+             "entfernen: Windows-Taste > 'Umgebungsvariablen' > Eintrag löschen")
+    if os.environ.get("ANTHROPIC_AUTH_TOKEN"):
+        warn("ANTHROPIC_AUTH_TOKEN ist zusätzlich gesetzt",
+             "Kann Authentifizierungsfehler verursachen - Variable entfernen")
+
+    # The .env file is authoritative (same as the app since load_dotenv(override=True))
+    api_key = file_key or system_key
     if not api_key:
         report(False, "ANTHROPIC_API_KEY",
                "nicht gesetzt",
-               "Datei .env anlegen (Vorlage: .env.example) und "
-               "ANTHROPIC_API_KEY=sk-ant-... eintragen")
+               "In .env eintragen: ANTHROPIC_API_KEY=sk-ant-... "
+               "(Schlüssel von https://platform.claude.com > API-Schlüssel)")
         return False
+
+    if api_key == "your-api-key-here":
+        report(False, "ANTHROPIC_API_KEY",
+               "enthält noch den Platzhalter 'your-api-key-here'",
+               "Echten Schlüssel von https://platform.claude.com > API-Schlüssel eintragen")
+        return False
+    if api_key.startswith('"') or api_key.startswith("'"):
+        warn("ANTHROPIC_API_KEY", "beginnt mit einem Anführungszeichen - bitte entfernen")
     if not api_key.startswith("sk-ant-"):
-        warn("ANTHROPIC_API_KEY", "gesetzt, beginnt aber nicht mit 'sk-ant-' - bitte prüfen")
+        warn("ANTHROPIC_API_KEY",
+             f"beginnt mit '{api_key[:6]}...' statt 'sk-ant-' - "
+             "das ist kein Anthropic-API-Schlüssel")
+
+    # Make sure the live test uses exactly this key
+    os.environ["ANTHROPIC_API_KEY"] = api_key
 
     try:
         from anthropic import Anthropic

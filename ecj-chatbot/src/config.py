@@ -10,7 +10,11 @@ from dataclasses import dataclass, field
 
 from dotenv import load_dotenv
 
-load_dotenv()
+# override=True: the project's .env file is authoritative. Without it,
+# a stale ANTHROPIC_API_KEY stored in the Windows/macOS environment
+# (e.g. from an old tutorial setup) silently wins over the .env file,
+# and no amount of editing .env fixes a 401.
+load_dotenv(override=True)
 
 
 @dataclass
