@@ -275,7 +275,12 @@ class Config:
 
     def get_status(self) -> dict:
         """Get configuration status for display."""
-        cases_count = len(list(self.cases_dir.glob("*.json"))) if self.cases_dir.exists() else 0
+        # Exclude the download checkpoint (bookkeeping, not a case document;
+        # see data_acquisition.CHECKPOINT_FILE)
+        cases_count = len([
+            f for f in self.cases_dir.glob("*.json")
+            if f.name != "download_checkpoint.json"
+        ]) if self.cases_dir.exists() else 0
         index_exists = self.index_dir.exists() and any(self.index_dir.iterdir()) if self.index_dir.exists() else False
 
         return {

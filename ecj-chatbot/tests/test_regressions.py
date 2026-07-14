@@ -108,6 +108,30 @@ class TestLanguageAwareSubjectFilter:
         assert document_passes_subject_filter(_make_doc("DE"), {})
 
 
+class TestCheckpointNotACase:
+    """The checkpoint file must never be counted or loaded as a case:
+    after a failed download it was the only .json on disk, the app
+    counted it as '1 Entscheidung', skipped the download, and built an
+    empty index."""
+
+    def test_load_documents_skips_checkpoint(self, tmp_path, sample_case_dict):
+        from data_acquisition import (load_documents_from_disk,
+                                      save_checkpoint, load_checkpoint)
+        save_checkpoint(tmp_path, load_checkpoint(tmp_path))
+        (tmp_path / "62020CJ0311.json").write_text(
+            json.dumps(sample_case_dict), encoding="utf-8")
+        docs = list(load_documents_from_disk(tmp_path))
+        assert [d.celex for d in docs] == ["62020CJ0311"]
+
+    def test_config_status_excludes_checkpoint(self, tmp_path):
+        from config import Config
+        cfg = Config(data_dir=tmp_path)
+        cfg.ensure_directories()
+        from data_acquisition import save_checkpoint, load_checkpoint
+        save_checkpoint(cfg.cases_dir, load_checkpoint(cfg.cases_dir))
+        assert cfg.get_status()["cases_count"] == 0
+
+
 class TestRejectedCelexPersistence:
     """Rejected cases are stored in the checkpoint so they are not
     re-downloaded on every start."""
