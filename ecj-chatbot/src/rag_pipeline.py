@@ -22,7 +22,7 @@ from data_acquisition import (
 )
 
 
-load_dotenv()
+load_dotenv(override=True)  # .env wins over stale system environment variables
 
 
 # Language display names
