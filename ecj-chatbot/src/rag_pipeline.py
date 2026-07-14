@@ -112,13 +112,24 @@ class EuGHChatbot:
     RAG-based chatbot for EuGH case law questions.
     """
 
+    # Case references like "C-311/18", "T-604/18", "F-46/09"
+    CASE_REF_RE = re.compile(r"\b([CTF])\s?-\s?(\d{1,4})/(\d{2})\b", re.IGNORECASE)
+    # CELEX numbers like "62018CJ0311"
+    CELEX_REF_RE = re.compile(r"\b(6\d{4}[A-Z]{2}\d{4})\b")
+
+    # Limits for full-text context (characters). A judgment is typically
+    # 50-200k chars; the model's context window handles several at once.
+    MAX_FULL_TEXT_DOCS = 3
+    MAX_FULL_TEXT_CHARS = 300_000
+
     def __init__(
         self,
         vector_store: CaseLawVectorStore,
         api_key: str | None = None,
         model: str | None = None,
         n_results: int = 5,
-        subject_areas: list[str] | None = None
+        subject_areas: list[str] | None = None,
+        cases_dir: Path | str | None = None
     ):
         """
         Initialize the chatbot.
@@ -129,12 +140,16 @@ class EuGHChatbot:
             model: Claude model to use (default: config / ECJ_LLM_MODEL)
             n_results: Number of documents to retrieve for context
             subject_areas: Optional EuroVoc descriptor labels to filter live searches
+            cases_dir: Directory with the downloaded case JSON files (for
+                full-text loading when a question names a specific case)
         """
 
         self.vector_store = vector_store
         self.model = model or get_config().llm_model
         self.n_results = n_results
         self.subject_areas = subject_areas
+        self.cases_dir = Path(cases_dir) if cases_dir else get_config().cases_dir
+        self._case_lookup: dict[str, Path] | None = None
 
         api_key = api_key or os.getenv("ANTHROPIC_API_KEY")
         if not api_key:
@@ -145,6 +160,98 @@ class EuGHChatbot:
 
         self.client = Anthropic(api_key=api_key)
         self.conversation_history = []
+
+    # ------------------------------------------------------------------
+    # Full-text loading for explicitly referenced cases
+    # ------------------------------------------------------------------
+
+    def _build_case_lookup(self) -> dict[str, Path]:
+        """Map case numbers ("C-311/18") and CELEX numbers to JSON files."""
+        if self._case_lookup is not None:
+            return self._case_lookup
+
+        import json as _json
+        lookup: dict[str, Path] = {}
+        if self.cases_dir.exists():
+            for json_file in self.cases_dir.glob("*.json"):
+                if json_file.name == "download_checkpoint.json":
+                    continue
+                try:
+                    with open(json_file, 'r', encoding='utf-8') as f:
+                        data = _json.load(f)
+                except Exception:
+                    continue
+                celex = (data.get("celex") or "").upper()
+                if celex:
+                    lookup[celex] = json_file
+                case_number = (data.get("case_number") or "").upper().replace(" ", "")
+                if case_number:
+                    lookup[case_number] = json_file
+        self._case_lookup = lookup
+        return lookup
+
+    def _find_referenced_cases(self, question: str) -> list[CaseLawDocument]:
+        """Load the FULL text of cases explicitly named in the question.
+
+        When the user names a specific case ("C-311/18", "62018CJ0311"),
+        excerpt-based retrieval is not enough for legal analysis - the
+        complete judgment is loaded from disk into the context instead.
+        """
+        import json as _json
+        refs: list[str] = []
+        for match in self.CASE_REF_RE.finditer(question):
+            court, num, year = match.groups()
+            refs.append(f"{court.upper()}-{int(num)}/{year}")
+        refs.extend(m.upper() for m in self.CELEX_REF_RE.findall(question))
+
+        if not refs:
+            return []
+
+        lookup = self._build_case_lookup()
+        docs: list[CaseLawDocument] = []
+        seen: set[str] = set()
+        for ref in refs:
+            path = lookup.get(ref.replace(" ", ""))
+            if not path:
+                continue
+            try:
+                with open(path, 'r', encoding='utf-8') as f:
+                    doc = CaseLawDocument(**_json.load(f))
+            except Exception:
+                continue
+            if doc.celex in seen:
+                continue
+            seen.add(doc.celex)
+            docs.append(doc)
+            if len(docs) >= self.MAX_FULL_TEXT_DOCS:
+                break
+        return docs
+
+    def _full_text_results(self, docs: list[CaseLawDocument]) -> list[dict]:
+        """Format full documents as context entries."""
+        results = []
+        for doc in docs:
+            text = doc.text
+            if len(text) > self.MAX_FULL_TEXT_CHARS:
+                text = text[:self.MAX_FULL_TEXT_CHARS] + "\n[... Text gekürzt ...]"
+            results.append({
+                "text": text,
+                "metadata": {
+                    "celex": doc.celex,
+                    "title": doc.title,
+                    "date": doc.date,
+                    "case_number": doc.case_number,
+                    "court": doc.court,
+                    "document_type": doc.document_type,
+                    "eurlex_url": doc.eurlex_url,
+                    "curia_url": doc.curia_url,
+                    "ecli": doc.ecli,
+                    "language": doc.language,
+                },
+                "distance": None,
+                "source": "full_text",
+            })
+        return results
 
     def search_relevant_cases(
         self,
@@ -167,14 +274,18 @@ class EuGHChatbot:
         Returns:
             Tuple of (search_results, used_live_fallback)
         """
-        # First: Search local vector index
+        # First: Search local vector index (extra chunks so that each
+        # case can contribute several passages, not just one)
         results = self.vector_store.search(
             query=query,
-            n_results=self.n_results * 2
+            n_results=self.n_results * 4
         )
 
-        # Deduplicate to unique cases
+        # Deduplicate to unique cases, then attach the other matching
+        # passages of the same case (one 1000-char excerpt per judgment
+        # was too little context for legal analysis)
         unique_cases = self.vector_store.get_unique_cases(results)
+        unique_cases = self._attach_additional_chunks(unique_cases, results)
         local_results = unique_cases[:self.n_results]
 
         # Check if we have sufficiently relevant results
@@ -258,6 +369,36 @@ class EuGHChatbot:
                 combined.append(local_r)
 
         return combined, len(live_results) > 0
+
+    def _attach_additional_chunks(
+        self,
+        unique_cases: list[dict],
+        all_results: list[dict],
+        max_chunks: int = 3
+    ) -> list[dict]:
+        """Combine up to max_chunks matching passages per case into one text."""
+        if not isinstance(all_results, list) or not isinstance(unique_cases, list):
+            return unique_cases
+
+        by_celex: dict[str, list[str]] = {}
+        for r in all_results:
+            try:
+                celex = r["metadata"].get("celex", "")
+                text = r.get("text", "")
+            except (TypeError, AttributeError, KeyError):
+                return unique_cases
+            if celex and text:
+                by_celex.setdefault(celex, []).append(text)
+
+        enriched = []
+        for case in unique_cases:
+            celex = case.get("metadata", {}).get("celex", "")
+            chunks = by_celex.get(celex, [])
+            if len(chunks) > 1:
+                case = dict(case)
+                case["text"] = "\n[...]\n".join(chunks[:max_chunks])
+            enriched.append(case)
+        return enriched
 
     def _extract_search_terms(self, query: str) -> list[str]:
         """
