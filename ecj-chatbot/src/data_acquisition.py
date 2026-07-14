@@ -265,26 +265,40 @@ def celex_doc_type(celex: str) -> str | None:
     return match.group(1) if match else None
 
 
+# Court names by CELEX type-code prefix (derived client-side; the SPARQL
+# label joins were removed to keep window queries cheap and reliable)
+CELEX_COURT_LABELS = {
+    "C": "Court of Justice",
+    "T": "General Court",
+    "F": "Civil Service Tribunal",
+}
+
+
 def _build_sparql_query(
-    limit: int = 1000,
-    offset: int = 0,
-    year_from: int | None = None,
-    year_to: int | None = None,
+    limit: int = 3000,
+    date_from: str | None = None,
+    date_to: str | None = None,
     subject_areas: list[str] | None = None,
     celex_predicate: str = CELEX_PREDICATE
 ) -> str:
-    """Build a SPARQL query for case law metadata (sector 6, any doc type)."""
+    """Build a SPARQL query for case law metadata within a date window.
 
-    # Build date filter. Compare on STR(?date): ISO dates (YYYY-MM-DD)
-    # order correctly as strings, and unlike a typed xsd:date comparison
-    # this works regardless of how the literal is typed in CELLAR
-    # (a typed comparison against an untyped literal silently filters
-    # out every row).
+    Deliberately cheap: no ORDER BY, no OFFSET, no cross-graph label
+    joins. Field testing showed the CELLAR endpoint's "anytime" timeout
+    silently truncating expensive queries (whole-corpus sorts) to
+    partial or empty result sets. Small date windows + client-side
+    sorting/labeling avoid that entirely.
+    """
+
+    # Date filter on STR(?date): ISO dates (YYYY-MM-DD) order correctly
+    # as strings, and unlike a typed xsd:date comparison this works
+    # regardless of how the literal is typed in CELLAR (a typed
+    # comparison against an untyped literal silently drops every row).
     date_filter = ""
-    if year_from:
-        date_filter += f'FILTER(STR(?date) >= "{year_from}-01-01")\n'
-    if year_to:
-        date_filter += f'FILTER(STR(?date) <= "{year_to}-12-31")\n'
+    if date_from:
+        date_filter += f'FILTER(STR(?date) >= "{date_from}")\n'
+    if date_to:
+        date_filter += f'FILTER(STR(?date) <= "{date_to}")\n'
 
     # Require CELEX sector 6 (case-law). Document-type filtering happens
     # client-side: field testing showed the server-side REGEX variant
@@ -311,7 +325,7 @@ def _build_sparql_query(
     PREFIX skos: <http://www.w3.org/2004/02/skos/core#>
     PREFIX xsd: <http://www.w3.org/2001/XMLSchema#>
 
-    SELECT DISTINCT ?celex ?title ?date ?ecli ?caseNumber ?courtLabel ?typeLabel
+    SELECT DISTINCT ?celex ?title ?date ?ecli ?caseNumber
     WHERE {{
         # Resource type: Case Law
         ?work a cdm:case-law .
@@ -319,7 +333,7 @@ def _build_sparql_query(
         # CELEX number (required)
         ?work {celex_predicate} ?celex .
         {celex_filter}
-        # Date (required so date filtering and ordering stay cheap)
+        # Date (required for windowing)
         ?work cdm:work_date_document ?date .
 
         # Title
@@ -334,26 +348,10 @@ def _build_sparql_query(
         # Case number
         OPTIONAL {{ ?work cdm:case-law_case_number ?caseNumber . }}
 
-        # Court
-        OPTIONAL {{
-            ?work cdm:case-law_delivered_by_court ?court .
-            ?court skos:prefLabel ?courtLabel .
-            FILTER(lang(?courtLabel) = "en")
-        }}
-
-        # Document type
-        OPTIONAL {{
-            ?work cdm:resource_legal_type ?docType .
-            ?docType skos:prefLabel ?typeLabel .
-            FILTER(lang(?typeLabel) = "en")
-        }}
-
         {subject_filter}
         {date_filter}
     }}
-    ORDER BY DESC(?date)
     LIMIT {limit}
-    OFFSET {offset}
     """
 
 
@@ -390,10 +388,10 @@ def _execute_sparql_query(
                     "date": binding.get("date", {}).get("value", ""),
                     "ecli": binding.get("ecli", {}).get("value"),
                     "case_number": binding.get("caseNumber", {}).get("value"),
-                    "court": binding.get("courtLabel", {}).get("value", "Unknown"),
-                    # Usually absent for case-law; filled in from the CELEX
+                    # court and document_type are derived from the CELEX
                     # code by _filter_and_label_by_doc_type
-                    "document_type": binding.get("typeLabel", {}).get("value", ""),
+                    "court": "",
+                    "document_type": "",
                 }
                 cases.append(case)
 
@@ -437,51 +435,81 @@ def _filter_and_label_by_doc_type(
         code = celex_doc_type(case.get("celex", ""))
         if celex_doc_types and code not in celex_doc_types:
             continue
+        case = dict(case)
         if not case.get("document_type"):
-            case = dict(case)
             case["document_type"] = CELEX_DOC_TYPE_LABELS.get(
                 code, "Case-law document")
+        if not case.get("court"):
+            case["court"] = CELEX_COURT_LABELS.get(
+                (code or " ")[0], "Court of Justice")
         result.append(case)
     return result
 
 
-def _fetch_metadata_page(
-    limit: int,
-    offset: int,
-    year_from: int | None,
-    year_to: int | None,
-    subject_areas: list[str] | None,
-    celex_doc_types: list[str] | None
-) -> tuple[list[dict], int]:
-    """Fetch one metadata page. Returns (filtered cases, raw page size).
+def _month_windows(
+    year_from: int,
+    year_to: int | None = None
+) -> list[tuple[str, str]]:
+    """Calendar-month date windows, newest first.
 
-    The raw page size lets callers paginate correctly even when
-    client-side type filtering shrinks the page.
+    Returns (first_day, last_day) ISO date pairs from the current month
+    (or December of year_to) back to January of year_from.
+    """
+    from datetime import date, timedelta
+    today = date.today()
+    end_year = min(year_to, today.year) if year_to else today.year
+    end_month = today.month if end_year == today.year else 12
+
+    windows = []
+    year, month = end_year, end_month
+    while year > year_from or (year == year_from and month >= 1):
+        if year < year_from:
+            break
+        next_month = date(year + 1, 1, 1) if month == 12 else date(year, month + 1, 1)
+        last_day = next_month - timedelta(days=1)
+        windows.append((f"{year:04d}-{month:02d}-01", last_day.isoformat()))
+        month -= 1
+        if month == 0:
+            year, month = year - 1, 12
+    return windows
+
+
+def _fetch_metadata_window(
+    date_from: str,
+    date_to: str,
+    subject_areas: list[str] | None,
+    celex_doc_types: list[str] | None,
+    limit: int = 3000
+) -> tuple[list[dict], int]:
+    """Fetch all case-law metadata in one date window.
+
+    Returns (filtered cases sorted newest-first, raw row count). One
+    month of case-law is a few hundred rows - small enough that the
+    CELLAR endpoint answers reliably without sorts or pagination.
     """
     # Try with subject area filter first (best effort: don't raise here,
     # since we retry without the filter anyway)
     if subject_areas:
-        query = _build_sparql_query(limit, offset, year_from, year_to,
-                                    subject_areas)
+        query = _build_sparql_query(limit, date_from, date_to, subject_areas)
         cases = _execute_sparql_query(query, retries=1, raise_on_error=False)
         if cases:
+            cases.sort(key=lambda c: c.get("date", ""), reverse=True)
             return _filter_and_label_by_doc_type(cases, celex_doc_types), len(cases)
         # EuroVoc descriptors are often not linked to case-law in CELLAR.
-        # Fall back to querying without the subject area filter.
         print("  EuroVoc subject filter returned 0 results for case-law. "
               "Retrying without subject area filter...")
 
     # Cascade over the CELEX property name (covers CDM naming differences).
     cases = []
     for predicate in (CELEX_PREDICATE, CELEX_PREDICATE_LEGACY):
-        query = _build_sparql_query(limit, offset, year_from, year_to,
+        query = _build_sparql_query(limit, date_from, date_to,
                                     subject_areas=None,
                                     celex_predicate=predicate)
         cases = _execute_sparql_query(query)
         if cases:
             break
-        print(f"  No results via {predicate}.")
 
+    cases.sort(key=lambda c: c.get("date", ""), reverse=True)
     return _filter_and_label_by_doc_type(cases, celex_doc_types), len(cases)
 
 
@@ -495,91 +523,114 @@ def get_case_law_metadata(
     celex_doc_types: list[str] | None = None
 ) -> list[dict]:
     """
-    Fetch case law metadata from EUR-Lex via SPARQL (single page).
+    Fetch the most recent case law metadata (walking back month by month).
 
-    If subject_areas are provided but the query returns 0 results (EuroVoc
-    descriptors are often not available for case-law in CELLAR), the query
-    is automatically retried without the subject area filter.
+    Used for incremental updates and diagnosis: walks calendar-month
+    windows from the current month backwards until `limit` matching
+    cases are collected or year_from (default: 2 years back) is reached.
 
     Args:
-        limit: Maximum number of results (before doc-type filtering)
-        offset: Offset for pagination
-        year_from: Filter by start year
-        year_to: Filter by end year
-        court: Court filter (Court of Justice, General Court, Civil Service Tribunal)
-        subject_areas: Optional list of EuroVoc descriptor labels (English) to filter by.
-                       Cases must have at least one matching descriptor.
+        limit: Stop after this many matching cases (newest first)
+        offset: Unused (kept for backwards compatibility)
+        year_from: How far back to look (default: 2 years)
+        year_to: Newest year to include
+        court: Unused (kept for backwards compatibility)
+        subject_areas: Optional list of EuroVoc descriptor labels (English)
         celex_doc_types: CELEX document-type codes to keep (default: ["CJ"],
                        i.e. judgments of the Court of Justice); pass [] to
                        keep every document type.
 
     Returns:
-        List of case metadata dictionaries
+        List of case metadata dictionaries, newest first
 
     Raises:
         DataAcquisitionError: if the SPARQL endpoint cannot be reached.
     """
+    from datetime import date
     if celex_doc_types is None:
         celex_doc_types = ["CJ"]
+    if year_from is None:
+        year_from = date.today().year - 2
 
-    cases, _raw = _fetch_metadata_page(limit, offset, year_from, year_to,
-                                       subject_areas, celex_doc_types)
-    return cases
+    collected: list[dict] = []
+    seen: set[str] = set()
+    for date_from, date_to in _month_windows(year_from, year_to):
+        cases, _raw = _fetch_metadata_window(
+            date_from, date_to, subject_areas, celex_doc_types)
+        for case in cases:
+            celex = case.get("celex", "")
+            if celex and celex not in seen:
+                seen.add(celex)
+                collected.append(case)
+        if len(collected) >= limit:
+            break
+
+    return collected[:limit]
 
 
 def get_all_case_law_metadata(
     year_from: int | None = None,
     year_to: int | None = None,
     subject_areas: list[str] | None = None,
-    page_size: int = 1000,
+    page_size: int = 3000,
     max_cases: int | None = None,
     celex_doc_types: list[str] | None = None
 ) -> list[dict]:
     """
-    Fetch case law metadata from EUR-Lex via paginated SPARQL queries.
+    Fetch case law metadata via one SPARQL query per calendar month.
 
-    Pages through results (newest first) until no more are returned or
-    max_cases is reached.
+    Walks month windows newest-first until max_cases matching cases are
+    collected or year_from is reached. Field testing showed that large
+    queries (whole-corpus sorts, OFFSET pagination) get silently
+    truncated by the endpoint's "anytime" timeout - to 104 rows on one
+    run and 0 rows on the next. One month of case-law is a few hundred
+    rows, which the endpoint answers reliably.
+
+    An empty month is retried once (it may be a timeout rather than a
+    genuinely empty month, e.g. the court's summer recess).
 
     Args:
-        year_from: Filter by start year
-        year_to: Filter by end year
+        year_from: Earliest year to include (default 2018)
+        year_to: Newest year to include (default: today)
         subject_areas: Optional list of EuroVoc descriptor labels for SPARQL filtering
-        page_size: Number of results per SPARQL query (max ~10000 for the endpoint)
-        max_cases: Stop after this many results (newest first); None = no limit
+        page_size: Row limit per month window query
+        max_cases: Stop after this many matching cases (newest first); None = no limit
         celex_doc_types: CELEX document-type codes to include (default: judgments)
 
     Returns:
-        List of case metadata dictionaries
+        List of case metadata dictionaries, newest first
     """
     if celex_doc_types is None:
         celex_doc_types = ["CJ"]
+    if year_from is None:
+        year_from = 2018
 
-    all_cases = []
-    offset = 0
-    page = 1
-    max_pages = 500  # safety backstop
+    all_cases: list[dict] = []
+    seen: set[str] = set()
+    windows = _month_windows(year_from, year_to)
 
-    while page <= max_pages:
-        print(f"  Fetching metadata page {page} (offset {offset})...")
-        cases, raw_count = _fetch_metadata_page(
-            limit=page_size,
-            offset=offset,
-            year_from=year_from,
-            year_to=year_to,
-            subject_areas=subject_areas,
-            celex_doc_types=celex_doc_types
+    for i, (date_from, date_to) in enumerate(windows, 1):
+        print(f"  Fetching month {date_from[:7]} ({i}/{len(windows)})...")
+        cases, raw_count = _fetch_metadata_window(
+            date_from, date_to, subject_areas, celex_doc_types,
+            limit=page_size
         )
-
-        # Only an EMPTY page means the result set is exhausted. Under load
-        # the CELLAR endpoint returns PARTIAL pages (its "anytime" timeout),
-        # so a short page must not end pagination - field testing showed a
-        # first page of only 104 rows despite thousands of matches.
         if raw_count == 0:
-            break
+            # Could be a timeout rather than an empty month - try once more
+            cases, raw_count = _fetch_metadata_window(
+                date_from, date_to, subject_areas, celex_doc_types,
+                limit=page_size
+            )
 
-        all_cases.extend(cases)
-        print(f"    Got {len(cases)} matching cases from a page of {raw_count} "
+        added = 0
+        for case in cases:
+            celex = case.get("celex", "")
+            if celex and celex not in seen:
+                seen.add(celex)
+                all_cases.append(case)
+                added += 1
+
+        print(f"    {added} matching cases from {raw_count} rows "
               f"(total so far: {len(all_cases)})")
 
         if max_cases is not None and len(all_cases) >= max_cases:
@@ -587,21 +638,7 @@ def get_all_case_law_metadata(
             print(f"    Reached configured maximum of {max_cases} cases.")
             break
 
-        # Advance by the rows actually received, not by the requested
-        # page size, so partial pages don't skip over results.
-        offset += raw_count
-        page += 1
-
-    # Deduplicate by CELEX number (pagination can sometimes return overlaps)
-    seen = set()
-    unique_cases = []
-    for case in all_cases:
-        celex = case.get("celex", "")
-        if celex and celex not in seen:
-            seen.add(celex)
-            unique_cases.append(case)
-
-    return unique_cases
+    return all_cases
 
 
 def _extract_text_from_html(content: bytes) -> str | None:
