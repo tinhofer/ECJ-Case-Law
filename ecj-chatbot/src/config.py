@@ -56,6 +56,12 @@ class Config:
     # every query down; disabled by default (Stichwort filter is used instead)
     use_eurovoc_filter: bool = False
 
+    # Topic corpora: CELEX numbers of legal acts. For each act, ALL ECJ
+    # decisions citing it are downloaded (topic-complete, no keyword
+    # filtering, no year/count cap). Configure via ECJ_TOPIC_CELEX
+    # (comma-separated), e.g. "32016R0679" for the GDPR.
+    topic_celex: list[str] = field(default_factory=list)
+
     # Subject area filter: EuroVoc descriptor labels (English)
     # Used for SPARQL EuroVoc filtering (works for legislation, often not for case-law)
     subject_areas: list[str] = field(default_factory=lambda: [
@@ -303,6 +309,12 @@ class Config:
 
         if os.getenv("ECJ_MAX_INITIAL_CASES"):
             config.max_initial_cases = int(os.getenv("ECJ_MAX_INITIAL_CASES"))
+
+        if os.getenv("ECJ_TOPIC_CELEX"):
+            config.topic_celex = [
+                c.strip() for c in os.getenv("ECJ_TOPIC_CELEX").split(",")
+                if c.strip()
+            ]
 
         if os.getenv("ECJ_EMBEDDING_MODEL"):
             config.embedding_model = os.getenv("ECJ_EMBEDDING_MODEL")

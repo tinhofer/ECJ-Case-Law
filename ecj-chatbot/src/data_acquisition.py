@@ -570,6 +570,123 @@ def get_case_law_metadata(
     return collected[:limit]
 
 
+def get_citing_case_law_metadata(
+    cited_celex: str,
+    celex_doc_types: list[str] | None = None,
+    limit: int = 10000
+) -> list[dict]:
+    """
+    Fetch ALL ECJ decisions that cite a given legal act (topic-complete).
+
+    CELLAR stores which acts each decision cites, so "every decision
+    citing the GDPR" is a single precise query - no year cap, no keyword
+    guessing. Result sizes are small (hundreds), so one query suffices.
+
+    Args:
+        cited_celex: CELEX number of the cited act (e.g. "32016R0679" = GDPR)
+        celex_doc_types: CELEX document-type codes to keep (default: ["CJ"])
+        limit: Safety cap on raw rows
+
+    Returns:
+        List of case metadata dictionaries, newest first
+
+    Raises:
+        DataAcquisitionError: if the SPARQL endpoint cannot be reached.
+    """
+    if celex_doc_types is None:
+        celex_doc_types = ["CJ"]
+
+    escaped = cited_celex.replace('"', '')
+    query = f"""
+    PREFIX cdm: <http://publications.europa.eu/ontology/cdm#>
+
+    SELECT DISTINCT ?celex ?title ?date ?ecli ?caseNumber
+    WHERE {{
+        ?work cdm:work_cites_work ?cited .
+        ?cited cdm:resource_legal_id_celex "{escaped}" .
+
+        ?work cdm:resource_legal_id_celex ?celex .
+        FILTER(STRSTARTS(STR(?celex), "6"))
+
+        OPTIONAL {{ ?work cdm:work_date_document ?date . }}
+        OPTIONAL {{
+            ?work cdm:work_title ?title .
+            FILTER(lang(?title) = "de" || lang(?title) = "en")
+        }}
+        OPTIONAL {{ ?work cdm:case-law_ecli ?ecli . }}
+        OPTIONAL {{ ?work cdm:case-law_case_number ?caseNumber . }}
+    }}
+    LIMIT {limit}
+    """
+    cases = _execute_sparql_query(query)
+    cases.sort(key=lambda c: c.get("date", ""), reverse=True)
+    return _filter_and_label_by_doc_type(cases, celex_doc_types)
+
+
+def download_topic_corpora(
+    output_dir: Path,
+    topic_celex: list[str],
+    delay_seconds: float = 0.5,
+    celex_doc_types: list[str] | None = None,
+    progress_callback: Callable[[int, int, str], None] | None = None
+) -> int:
+    """
+    Download ALL decisions citing the configured legal acts.
+
+    Topic corpora are deliberately NOT run through the Stichwort keyword
+    filter and ignore the rejected-cases list: citing the act IS the
+    relevance criterion, and a decision previously rejected by keywords
+    may still belong to a topic corpus.
+
+    Args:
+        output_dir: Directory to save documents (same as the main corpus)
+        topic_celex: CELEX numbers of legal acts (e.g. ["32016R0679"])
+        delay_seconds: Delay between document fetches
+        celex_doc_types: CELEX document-type codes to keep (default: ["CJ"])
+        progress_callback: Optional callable(done, total, current_celex)
+
+    Returns:
+        Number of newly downloaded documents
+
+    Raises:
+        DataAcquisitionError: if EUR-Lex cannot be reached.
+    """
+    output_dir = Path(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    downloaded = 0
+    for act in topic_celex:
+        print(f"Fetching all case-law citing {act}...")
+        metadata_list = get_citing_case_law_metadata(act, celex_doc_types)
+        print(f"  {len(metadata_list)} decisions cite {act}. Checking for new ones...")
+
+        total = len(metadata_list)
+        for i, metadata in enumerate(tqdm(metadata_list, desc=f"Topic {act}")):
+            celex = metadata.get("celex", "")
+            if not celex:
+                continue
+            if progress_callback:
+                progress_callback(i, total, celex)
+
+            output_file = output_dir / f"{celex.replace(':', '_')}.json"
+            if output_file.exists():
+                continue
+
+            doc = create_case_document(metadata)
+            if doc:
+                with open(output_file, 'w', encoding='utf-8') as f:
+                    json.dump(doc.to_dict(), f, ensure_ascii=False, indent=2)
+                downloaded += 1
+
+            time.sleep(delay_seconds)
+
+        if progress_callback:
+            progress_callback(total, total, "")
+
+    print(f"Downloaded {downloaded} new topic-corpus documents")
+    return downloaded
+
+
 def get_all_case_law_metadata(
     year_from: int | None = None,
     year_to: int | None = None,

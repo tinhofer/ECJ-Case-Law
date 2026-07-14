@@ -132,6 +132,86 @@ class TestCheckpointNotACase:
         assert cfg.get_status()["cases_count"] == 0
 
 
+class TestTopicCorpora:
+    """Topic corpora: ALL decisions citing a given legal act."""
+
+    def test_citing_query_shape(self):
+        from unittest.mock import patch
+        import data_acquisition as da
+
+        captured = {}
+
+        def fake_execute(query, **kwargs):
+            captured["query"] = query
+            return []
+
+        with patch.object(da, "_execute_sparql_query", side_effect=fake_execute):
+            da.get_citing_case_law_metadata("32016R0679")
+
+        q = captured["query"]
+        assert "cdm:work_cites_work" in q
+        assert '"32016R0679"' in q
+        assert 'STRSTARTS(STR(?celex), "6")' in q  # only case-law
+        assert "a cdm:case-law" not in q           # broken class constraint stays out
+
+    def test_citing_results_filtered_and_sorted(self):
+        from unittest.mock import patch
+        import data_acquisition as da
+
+        rows = [
+            {"celex": "62019CJ0311", "document_type": "", "court": "", "date": "2020-07-16"},
+            {"celex": "62021CC0300", "document_type": "", "court": "", "date": "2023-01-01"},
+            {"celex": "62022CJ0100", "document_type": "", "court": "", "date": "2024-03-03"},
+        ]
+        with patch.object(da, "_execute_sparql_query", return_value=list(rows)):
+            result = da.get_citing_case_law_metadata("32016R0679")
+        # AG opinion filtered out, newest judgment first
+        assert [c["celex"] for c in result] == ["62022CJ0100", "62019CJ0311"]
+
+    def test_topic_download_ignores_keyword_filter(self, tmp_path):
+        """Citing the act IS the relevance criterion - a decision whose
+        Stichwort would fail the keyword filter must still be saved."""
+        from unittest.mock import patch
+        import data_acquisition as da
+
+        meta = {"celex": "62019CJ0311", "title": "T", "date": "2020-07-16",
+                "case_number": "C-311/18", "court": "Court of Justice",
+                "document_type": "Judgment (Court of Justice)",
+                "ecli": None}
+        doc = da.CaseLawDocument(
+            celex="62019CJ0311", title="T", date="2020-07-16",
+            case_number="C-311/18", court="Court of Justice",
+            document_type="Judgment (Court of Justice)", text="x" * 600,
+            eurlex_url="http://example.com", curia_url=None, ecli=None,
+            keywords=["Zollunion"],  # would NOT match any subject keywords
+            language="DE",
+        )
+        with patch.object(da, "get_citing_case_law_metadata", return_value=[meta]), \
+             patch.object(da, "create_case_document", return_value=doc), \
+             patch.object(da.time, "sleep"):
+            n = da.download_topic_corpora(tmp_path, ["32016R0679"])
+        assert n == 1
+        assert (tmp_path / "62019CJ0311.json").exists()
+
+    def test_topic_download_skips_existing(self, tmp_path):
+        from unittest.mock import patch
+        import data_acquisition as da
+
+        meta = {"celex": "62019CJ0311"}
+        (tmp_path / "62019CJ0311.json").write_text("{}", encoding="utf-8")
+        with patch.object(da, "get_citing_case_law_metadata", return_value=[meta]), \
+             patch.object(da, "create_case_document") as mock_create:
+            n = da.download_topic_corpora(tmp_path, ["32016R0679"])
+        assert n == 0
+        mock_create.assert_not_called()
+
+    def test_config_topic_celex_from_env(self, monkeypatch):
+        from config import Config
+        monkeypatch.setenv("ECJ_TOPIC_CELEX", "32016R0679, 32003L0088")
+        cfg = Config.from_env()
+        assert cfg.topic_celex == ["32016R0679", "32003L0088"]
+
+
 class TestRejectedCelexPersistence:
     """Rejected cases are stored in the checkpoint so they are not
     re-downloaded on every start."""
