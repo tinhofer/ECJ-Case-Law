@@ -80,43 +80,112 @@ def check_packages():
 
 
 def check_eurlex_sparql():
+    from data_acquisition import get_case_law_metadata
+
+    # Step 1: minimal raw query (no filters) - proves basic connectivity
+    # and shows what CELEX/date values actually look like in CELLAR.
+    minimal_query = """
+    PREFIX cdm: <http://publications.europa.eu/ontology/cdm#>
+    SELECT ?celex ?date (DATATYPE(?date) AS ?dateType)
+    WHERE {
+        ?work a cdm:case-law .
+        ?work cdm:resource_legal_celex ?celex .
+        ?work cdm:work_date_document ?date .
+    }
+    LIMIT 3
+    """
+    minimal_ok = False
     try:
-        from data_acquisition import get_case_law_metadata
-        t0 = time.time()
-        cases = get_case_law_metadata(limit=5, year_from=2023)
-        elapsed = time.time() - t0
-        if cases:
-            report(True, "EUR-Lex SPARQL-Endpoint",
-                   f"{len(cases)} Urteile in {elapsed:.1f}s, z.B. {cases[0].get('celex')}")
-            return cases
-        report(False, "EUR-Lex SPARQL-Endpoint", "Abfrage lieferte 0 Ergebnisse",
-               "EUR-Lex evtl. überlastet - später erneut versuchen")
-        return []
+        from SPARQLWrapper import SPARQLWrapper, JSON
+        from data_acquisition import SPARQL_ENDPOINT, USER_AGENT
+        sp = SPARQLWrapper(SPARQL_ENDPOINT, agent=USER_AGENT)
+        sp.setQuery(minimal_query)
+        sp.setReturnFormat(JSON)
+        sp.setTimeout(60)
+        bindings = sp.query().convert()["results"]["bindings"]
+        if bindings:
+            minimal_ok = True
+            b = bindings[0]
+            print(f"       Roh-Beispiel: celex={b.get('celex', {}).get('value')}, "
+                  f"date={b.get('date', {}).get('value')}, "
+                  f"date-Typ={b.get('dateType', {}).get('value', '(untypisiert)')}")
     except Exception as e:
-        report(False, "EUR-Lex SPARQL-Endpoint", str(e)[:200],
+        report(False, "EUR-Lex SPARQL-Endpoint (Basis-Abfrage)", str(e)[:200],
                "Internetverbindung prüfen; Firewall/Proxy muss "
                "publications.europa.eu (HTTPS) erlauben")
         return []
 
+    if not minimal_ok:
+        report(False, "EUR-Lex SPARQL-Endpoint (Basis-Abfrage)",
+               "Verbindung OK, aber 0 Zeilen für eine Minimal-Abfrage",
+               "EUR-Lex evtl. überlastet - später erneut versuchen")
+        return []
+    report(True, "EUR-Lex SPARQL-Endpoint (Basis-Abfrage)", "Verbindung OK")
+
+    # Step 2: the query the app actually uses
+    try:
+        t0 = time.time()
+        cases = get_case_law_metadata(limit=5, year_from=2023)
+        elapsed = time.time() - t0
+        if cases:
+            report(True, "EUR-Lex SPARQL-Endpoint (App-Abfrage)",
+                   f"{len(cases)} Urteile in {elapsed:.1f}s, z.B. {cases[0].get('celex')}")
+            return cases
+        report(False, "EUR-Lex SPARQL-Endpoint (App-Abfrage)",
+               "Basis-Abfrage OK, aber die gefilterte Abfrage liefert 0 Ergebnisse",
+               "Bitte diese komplette Ausgabe (inkl. 'Roh-Beispiel'-Zeile) "
+               "an den Entwickler weitergeben")
+        return []
+    except Exception as e:
+        report(False, "EUR-Lex SPARQL-Endpoint (App-Abfrage)", str(e)[:200],
+               "Bitte diese komplette Ausgabe an den Entwickler weitergeben")
+        return []
+
+
+def _probe_url(label: str, url: str, headers: dict | None = None):
+    """Fetch a URL and print status, size, and a content snippet."""
+    from data_acquisition import get_http_session
+    try:
+        r = get_http_session().get(url, timeout=30, headers=headers or {})
+        from bs4 import BeautifulSoup
+        text = BeautifulSoup(r.content, "lxml").get_text(separator=" ", strip=True)
+        snippet = " ".join(text[:200].split())
+        print(f"       {label}: HTTP {r.status_code}, {len(r.content)} Bytes, "
+              f"Textanfang: \"{snippet[:150]}\"")
+        return r.status_code, len(text)
+    except Exception as e:
+        print(f"       {label}: FEHLER {str(e)[:150]}")
+        return None, 0
+
 
 def check_eurlex_document(cases: list):
+    from data_acquisition import fetch_document_text_with_fallback
+    celex = cases[0]["celex"] if cases else "62018CJ0311"  # Schrems II as fallback
     try:
-        from data_acquisition import fetch_document_text_with_fallback
-        celex = cases[0]["celex"] if cases else "62018CJ0311"  # Schrems II as fallback
         text, lang = fetch_document_text_with_fallback(celex)
-        if text:
-            report(True, "EUR-Lex Dokument-Download",
-                   f"CELEX {celex}: {len(text)} Zeichen ({lang})")
-            return True
-        report(False, "EUR-Lex Dokument-Download",
-               f"CELEX {celex} in keiner Sprache abrufbar",
-               "eur-lex.europa.eu muss per HTTPS erreichbar sein "
-               "(Firewall/Proxy prüfen)")
-        return False
     except Exception as e:
-        report(False, "EUR-Lex Dokument-Download", str(e)[:200],
-               "eur-lex.europa.eu muss per HTTPS erreichbar sein")
-        return False
+        text, lang = None, ""
+        print(f"       Unerwarteter Fehler: {e}")
+
+    if text:
+        report(True, "EUR-Lex Dokument-Download",
+               f"CELEX {celex}: {len(text)} Zeichen ({lang})")
+        return True
+
+    report(False, "EUR-Lex Dokument-Download",
+           f"CELEX {celex} in keiner Sprache abrufbar - Details folgen",
+           "Bitte die Detail-Zeilen unten an den Entwickler weitergeben")
+    # Detailed probes so the failure cause is visible
+    _probe_url(
+        "EUR-Lex Website",
+        f"https://eur-lex.europa.eu/legal-content/DE/TXT/HTML/?uri=CELEX:{celex}"
+    )
+    _probe_url(
+        "CELLAR REST",
+        f"https://publications.europa.eu/resource/celex/{celex}",
+        headers={"Accept": "text/html,application/xhtml+xml", "Accept-Language": "de"}
+    )
+    return False
 
 
 def check_anthropic():

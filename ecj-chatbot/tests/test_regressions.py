@@ -132,8 +132,9 @@ class TestSparqlQueryBuilding:
 
     def test_date_range_filter_instead_of_year_function(self):
         query = _build_sparql_query(limit=10, year_from=2018, year_to=2020)
-        assert '?date >= "2018-01-01"^^xsd:date' in query
-        assert '?date <= "2020-12-31"^^xsd:date' in query
+        # String comparison on ISO dates: robust to literal typing in CELLAR
+        assert 'STR(?date) >= "2018-01-01"' in query
+        assert 'STR(?date) <= "2020-12-31"' in query
         assert "year(?date)" not in query
 
     def test_no_celex_filter_when_not_requested(self):

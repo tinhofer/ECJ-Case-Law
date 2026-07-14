@@ -251,14 +251,16 @@ def _build_sparql_query(
     CELLAR endpoint answers reliably instead of timing out.
     """
 
-    # Build date filter. Use a typed range comparison instead of year(?date)
-    # so Virtuoso can use its date index; year() over the whole case-law
-    # corpus regularly hits the endpoint's execution-time limit.
+    # Build date filter. Compare on STR(?date): ISO dates (YYYY-MM-DD)
+    # order correctly as strings, and unlike a typed xsd:date comparison
+    # this works regardless of how the literal is typed in CELLAR
+    # (a typed comparison against an untyped literal silently filters
+    # out every row).
     date_filter = ""
     if year_from:
-        date_filter += f'FILTER(?date >= "{year_from}-01-01"^^xsd:date)\n'
+        date_filter += f'FILTER(STR(?date) >= "{year_from}-01-01")\n'
     if year_to:
-        date_filter += f'FILTER(?date <= "{year_to}-12-31"^^xsd:date)\n'
+        date_filter += f'FILTER(STR(?date) <= "{year_to}-12-31")\n'
 
     # CELEX document-type filter (e.g. only judgments of the Court of Justice)
     celex_filter = ""
@@ -443,6 +445,18 @@ def get_case_law_metadata(
 
     query = _build_sparql_query(limit, offset, year_from, year_to,
                                 subject_areas=None, celex_doc_types=celex_doc_types)
+    cases = _execute_sparql_query(query)
+    if cases or not celex_doc_types:
+        return cases
+
+    # 0 results with the CELEX type filter can also mean the endpoint's
+    # "anytime" timeout truncated the (more expensive) REGEX query.
+    # Fall back to the unfiltered query so the app still gets data;
+    # the Stichwort filter downstream keeps the corpus focused.
+    print("  CELEX type filter returned 0 results. "
+          "Retrying without document-type filter...")
+    query = _build_sparql_query(limit, offset, year_from, year_to,
+                                subject_areas=None, celex_doc_types=None)
     return _execute_sparql_query(query)
 
 
@@ -516,9 +530,47 @@ def get_all_case_law_metadata(
     return unique_cases
 
 
+def _extract_text_from_html(content: bytes) -> str | None:
+    """Extract judgment text from an HTML page; None if it isn't a usable document."""
+    from bs4 import BeautifulSoup
+    soup = BeautifulSoup(content, 'lxml')
+
+    # Check for "document not available" indicators
+    page_text = soup.get_text()
+    not_available_indicators = [
+        "is not available in",
+        "n'est pas disponible en",
+        "ist nicht verfügbar in",
+        "Document does not exist",
+        "Dokument existiert nicht"
+    ]
+    if any(indicator in page_text for indicator in not_available_indicators):
+        return None
+
+    # Remove scripts and styles
+    for element in soup(['script', 'style', 'nav', 'header', 'footer']):
+        element.decompose()
+
+    # Get text content
+    text = soup.get_text(separator='\n', strip=True)
+
+    # Check if we got meaningful content (not just headers/navigation
+    # or a bot-challenge/consent page)
+    if len(text) < 500:
+        return None
+
+    return text
+
+
 def fetch_document_text(celex: str, language: str = "DE") -> str | None:
     """
-    Fetch the full text of a document from EUR-Lex in a specific language.
+    Fetch the full text of a document in a specific language.
+
+    Tries the EUR-Lex website first; if that yields nothing usable
+    (EUR-Lex sometimes serves challenge pages to non-browser clients),
+    falls back to the CELLAR REST interface on publications.europa.eu,
+    which is the official machine-access endpoint (same host as the
+    SPARQL service).
 
     Args:
         celex: CELEX number of the document
@@ -527,50 +579,37 @@ def fetch_document_text(celex: str, language: str = "DE") -> str | None:
     Returns:
         Document text or None if not available
     """
+    session = get_http_session()
 
-    # EUR-Lex REST API for HTML content
+    # Route 1: EUR-Lex website HTML
     url = f"https://eur-lex.europa.eu/legal-content/{language}/TXT/HTML/?uri=CELEX:{celex}"
-
     try:
-        response = get_http_session().get(url, timeout=30)
-        response.raise_for_status()
-
-        # Check if we got a valid document (not a "not available" page)
-        if response.status_code == 404:
-            return None
-
-        # Parse HTML and extract text
-        from bs4 import BeautifulSoup
-        soup = BeautifulSoup(response.content, 'lxml')
-
-        # Check for "document not available" indicators
-        page_text = soup.get_text()
-        not_available_indicators = [
-            "is not available in",
-            "n'est pas disponible en",
-            "ist nicht verfügbar in",
-            "Document does not exist",
-            "Dokument existiert nicht"
-        ]
-        if any(indicator in page_text for indicator in not_available_indicators):
-            return None
-
-        # Remove scripts and styles
-        for element in soup(['script', 'style', 'nav', 'header', 'footer']):
-            element.decompose()
-
-        # Get text content
-        text = soup.get_text(separator='\n', strip=True)
-
-        # Check if we got meaningful content (not just headers/navigation)
-        if len(text) < 500:
-            return None
-
-        return text
-
+        response = session.get(url, timeout=30)
+        if response.status_code == 200:
+            text = _extract_text_from_html(response.content)
+            if text:
+                return text
     except Exception as e:
-        print(f"Failed to fetch document {celex} in {language}: {e}")
-        return None
+        print(f"Failed to fetch document {celex} in {language} from EUR-Lex: {e}")
+
+    # Route 2: CELLAR REST interface (content negotiation)
+    cellar_url = f"https://publications.europa.eu/resource/celex/{celex}"
+    try:
+        response = session.get(
+            cellar_url,
+            timeout=30,
+            headers={
+                "Accept": "text/html,application/xhtml+xml",
+                "Accept-Language": language.lower(),
+            },
+            allow_redirects=True,
+        )
+        if response.status_code == 200:
+            return _extract_text_from_html(response.content)
+    except Exception as e:
+        print(f"Failed to fetch document {celex} in {language} from CELLAR: {e}")
+
+    return None
 
 
 def fetch_document_text_with_fallback(
@@ -1033,12 +1072,13 @@ def _build_live_search_query(
 
     filter_clause = " || ".join(term_filters) if term_filters else "true"
 
-    # Date filters
+    # Date filters (string comparison: robust to literal typing, see
+    # _build_sparql_query)
     date_filters = ""
     if year_from:
-        date_filters += f"FILTER(year(?date) >= {year_from})\n"
+        date_filters += f'FILTER(STR(?date) >= "{year_from}-01-01")\n'
     if year_to:
-        date_filters += f"FILTER(year(?date) <= {year_to})\n"
+        date_filters += f'FILTER(STR(?date) <= "{year_to}-12-31")\n'
 
     # EuroVoc subject area filter
     subject_filter = ""
