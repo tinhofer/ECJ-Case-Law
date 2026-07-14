@@ -39,8 +39,18 @@ class Config:
     # Download settings
     initial_year: int = 2018
     update_limit: int = 500  # Max cases to check per incremental update
-    download_delay: float = 1.0
+    download_delay: float = 0.5
     sparql_page_size: int = 1000  # Results per SPARQL page for initial download
+    # Cap for the initial download (newest cases first). This bounds the
+    # first start to a predictable duration instead of trying to download
+    # every ECJ document ever published. Raise via ECJ_MAX_INITIAL_CASES.
+    max_initial_cases: int = 1500
+    # CELEX document-type codes to download: CJ = ECJ judgment, CO = ECJ order,
+    # CC = Advocate General opinion, TJ = General Court judgment
+    celex_doc_types: list[str] = field(default_factory=lambda: ["CJ"])
+    # EuroVoc SPARQL filtering rarely works for case-law in CELLAR and slows
+    # every query down; disabled by default (Stichwort filter is used instead)
+    use_eurovoc_filter: bool = False
 
     # Subject area filter: EuroVoc descriptor labels (English)
     # Used for SPARQL EuroVoc filtering (works for legislation, often not for case-law)
@@ -124,6 +134,105 @@ class Config:
         "Charta der Grundrechte",
     ])
 
+    # English keywords matched against decisions only available in English
+    # (recent decisions are often not yet translated to German)
+    subject_keywords_en: list[str] = field(default_factory=lambda: [
+        # Employment / social policy / workers' rights
+        "social policy",
+        "worker",
+        "employment",
+        "employment contract",
+        "working time",
+        "working conditions",
+        "dismissal",
+        "collective redundancies",
+        "transfer of undertakings",
+        "temporary agency work",
+        "part-time work",
+        "fixed-term work",
+        "posting of workers",
+        "posted workers",
+        "migrant worker",
+        "freedom of movement for workers",
+        "social security",
+        "parental leave",
+        "annual leave",
+        "information and consultation",
+        # Data protection / privacy / AI
+        "data protection",
+        "personal data",
+        "protection of privacy",
+        "data retention",
+        "data transfer",
+        "artificial intelligence",
+        # Discrimination / equal treatment / fundamental rights
+        "discrimination",
+        "equal treatment",
+        "equality",
+        "age",
+        "sex",
+        "disability",
+        "religion",
+        "sexual orientation",
+        "fundamental rights",
+        "Charter of Fundamental Rights",
+    ])
+
+    # French keywords for decisions only available in French
+    subject_keywords_fr: list[str] = field(default_factory=lambda: [
+        # Emploi / politique sociale / droits des travailleurs
+        "politique sociale",
+        "travailleur",
+        "emploi",
+        "contrat de travail",
+        "temps de travail",
+        "conditions de travail",
+        "licenciement",
+        "licenciements collectifs",
+        "transfert d'entreprise",
+        "travail intérimaire",
+        "travail à temps partiel",
+        "travail à durée déterminée",
+        "détachement de travailleurs",
+        "libre circulation des travailleurs",
+        "sécurité sociale",
+        "congé parental",
+        "congé annuel",
+        "information et consultation",
+        # Protection des données / vie privée / IA
+        "protection des données",
+        "données à caractère personnel",
+        "vie privée",
+        "conservation des données",
+        "transfert de données",
+        "intelligence artificielle",
+        # Discrimination / égalité de traitement / droits fondamentaux
+        "discrimination",
+        "égalité de traitement",
+        "égalité",
+        "âge",
+        "sexe",
+        "handicap",
+        "religion",
+        "orientation sexuelle",
+        "droits fondamentaux",
+        "charte des droits fondamentaux",
+    ])
+
+    @property
+    def subject_keywords(self) -> dict[str, list[str]]:
+        """Keyword lists per language for Stichwort filtering."""
+        return {
+            "DE": self.subject_keywords_de,
+            "EN": self.subject_keywords_en,
+            "FR": self.subject_keywords_fr,
+        }
+
+    @property
+    def active_subject_areas(self) -> list[str] | None:
+        """EuroVoc subject areas, or None when EuroVoc filtering is disabled."""
+        return self.subject_areas if self.use_eurovoc_filter else None
+
     # Search settings
     n_results: int = 5
     relevance_threshold: float = 1.5
@@ -131,7 +240,7 @@ class Config:
 
     # Model settings
     embedding_model: str = "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
-    llm_model: str = "claude-sonnet-4-20250514"
+    llm_model: str = "claude-opus-4-8"
 
     @property
     def cases_dir(self) -> Path:
@@ -182,6 +291,9 @@ class Config:
         # Override with environment variables if set
         if os.getenv("ECJ_INITIAL_YEAR"):
             config.initial_year = int(os.getenv("ECJ_INITIAL_YEAR"))
+
+        if os.getenv("ECJ_MAX_INITIAL_CASES"):
+            config.max_initial_cases = int(os.getenv("ECJ_MAX_INITIAL_CASES"))
 
         if os.getenv("ECJ_EMBEDDING_MODEL"):
             config.embedding_model = os.getenv("ECJ_EMBEDDING_MODEL")

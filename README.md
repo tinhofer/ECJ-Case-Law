@@ -37,7 +37,13 @@ pip install -r requirements.txt
 cp .env.example .env            # Windows: copy .env.example .env
 ```
 
-Edit `.env` and add your `ANTHROPIC_API_KEY`, then:
+Edit `.env` and add your `ANTHROPIC_API_KEY`, then verify your setup:
+
+```bash
+python diagnose.py
+```
+
+This checks your Python version, packages, EUR-Lex connectivity, and API key step by step, and tells you exactly what to fix if something fails. Once everything passes:
 
 ```bash
 streamlit run app.py
@@ -45,7 +51,7 @@ streamlit run app.py
 
 > If `streamlit` is not found, use: `python -m streamlit run app.py`
 
-On first launch the app automatically downloads ~500 recent ECJ decisions from EUR-Lex and builds the search index. Subsequent launches only fetch new cases.
+On first launch the app downloads the most recent ECJ judgments since `ECJ_INITIAL_YEAR` (capped at `ECJ_MAX_INITIAL_CASES`, default 1500, newest first) from EUR-Lex, shows a progress bar, and builds the search index. Subsequent launches only fetch new cases. If the download is interrupted, already-downloaded decisions are kept and the download resumes on the next start.
 
 ## Architecture
 
@@ -98,8 +104,9 @@ Key settings via environment variables (see `.env.example`):
 |----------|-------------|---------|
 | `ANTHROPIC_API_KEY` | Your Anthropic API key | (required) |
 | `ECJ_DATA_DIR` | Data storage path (supports cloud folders) | `./data` |
-| `ECJ_LLM_MODEL` | Claude model to use | `claude-sonnet-4-20250514` |
-| `ECJ_INITIAL_YEAR` | Earliest year to download cases from | `2020` |
+| `ECJ_LLM_MODEL` | Claude model to use | `claude-opus-4-8` |
+| `ECJ_INITIAL_YEAR` | Earliest year to download cases from | `2018` |
+| `ECJ_MAX_INITIAL_CASES` | Cap for the initial download (newest first) | `1500` |
 | `ECJ_ENABLE_LIVE_FALLBACK` | Search EUR-Lex live for older cases | `true` |
 
 ## Tech Stack

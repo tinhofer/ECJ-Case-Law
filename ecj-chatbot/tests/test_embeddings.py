@@ -105,7 +105,7 @@ class TestAddDocument:
         )
         count = store.add_document(doc)
         assert count == 1
-        store.collection.add.assert_called_once()
+        store.collection.upsert.assert_called_once()
 
     def test_add_document_chunk_metadata(self):
         store = _make_store(chunk_size=500)
@@ -117,7 +117,7 @@ class TestAddDocument:
             ecli="ECLI:EU:C:2020:1", keywords=["test"], language="EN",
         )
         store.add_document(doc)
-        call_args = store.collection.add.call_args
+        call_args = store.collection.upsert.call_args
         metadatas = call_args.kwargs.get("metadatas") or call_args[1].get("metadatas")
         assert metadatas[0]["celex"] == "TEST123"
         assert metadatas[0]["language"] == "EN"

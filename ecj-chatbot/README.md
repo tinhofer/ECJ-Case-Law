@@ -103,7 +103,14 @@ cp .env.example .env
 
 Dann die `.env`-Datei mit einem Texteditor öffnen und Ihren `ANTHROPIC_API_KEY` eintragen.
 
-**Schritt 5 — Chatbot starten:**
+**Schritt 5 — Setup prüfen (empfohlen):**
+```bash
+python diagnose.py
+```
+
+Dieses Werkzeug prüft Schritt für Schritt: Python-Version, installierte Pakete, Erreichbarkeit von EUR-Lex, den API-Schlüssel und die lokale Datenbank — und sagt Ihnen bei jedem Problem genau, was zu tun ist. **Wenn die App nicht funktioniert, ist dies immer der erste Schritt.**
+
+**Schritt 6 — Chatbot starten:**
 ```bash
 streamlit run app.py
 ```
@@ -113,9 +120,11 @@ streamlit run app.py
 > **Wichtig:** Schritt 2 (venv aktivieren) nicht vergessen! Ohne aktivierte virtuelle Umgebung landen Pakete im globalen Python und Befehle wie `streamlit` sind evtl. nicht im PATH.
 
 Beim ersten Start werden automatisch:
-- EuGH-Entscheidungen seit 2018 heruntergeladen (~500 Fälle)
+- Die neuesten EuGH-Urteile seit 2018 heruntergeladen (max. 1500, neueste zuerst — konfigurierbar über `ECJ_MAX_INITIAL_CASES`), mit Fortschrittsanzeige
 - Der Suchindex erstellt
 - Bei weiteren Starts nur neue Fälle nachgeladen
+
+> Der Download dauert je nach Umfang 15–60 Minuten. Er kann jederzeit abgebrochen werden — bereits geladene Entscheidungen bleiben erhalten und der Download wird beim nächsten Start fortgesetzt.
 
 ### Manueller Workflow (optional)
 
@@ -242,11 +251,11 @@ EMBEDDING_MODEL = "deutsche-telekom/gbert-large-paraphrase-cosine"  # Deutsch-op
 
 ### LLM-Modell
 
-In `rag_pipeline.py` kann das Claude-Modell geändert werden:
+Das Claude-Modell wird über die Umgebungsvariable `ECJ_LLM_MODEL` in der `.env`-Datei gewählt (Standard: `claude-opus-4-8`):
 
-```python
-model = "claude-sonnet-4-20250514"  # Schneller
-model = "claude-opus-4-20250514"       # Höhere Qualität
+```bash
+ECJ_LLM_MODEL=claude-opus-4-8    # Höchste Qualität (Standard)
+ECJ_LLM_MODEL=claude-sonnet-5    # Schneller und günstiger
 ```
 
 ## Beispiel-Interaktion

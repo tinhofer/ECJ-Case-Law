@@ -13,6 +13,7 @@ from typing import Callable
 from anthropic import Anthropic
 from dotenv import load_dotenv
 
+from config import get_config
 from embeddings import CaseLawVectorStore
 from data_acquisition import (
     live_search_cases,
@@ -115,7 +116,7 @@ class EuGHChatbot:
         self,
         vector_store: CaseLawVectorStore,
         api_key: str | None = None,
-        model: str = "claude-sonnet-4-20250514",
+        model: str | None = None,
         n_results: int = 5,
         subject_areas: list[str] | None = None
     ):
@@ -125,13 +126,13 @@ class EuGHChatbot:
         Args:
             vector_store: CaseLawVectorStore instance
             api_key: Anthropic API key (or set ANTHROPIC_API_KEY env var)
-            model: Claude model to use
+            model: Claude model to use (default: config / ECJ_LLM_MODEL)
             n_results: Number of documents to retrieve for context
             subject_areas: Optional EuroVoc descriptor labels to filter live searches
         """
 
         self.vector_store = vector_store
-        self.model = model
+        self.model = model or get_config().llm_model
         self.n_results = n_results
         self.subject_areas = subject_areas
 
@@ -196,12 +197,18 @@ class EuGHChatbot:
         if not query_terms:
             return local_results, False
 
-        # Search without year restriction to include older cases
-        live_cases = live_search_cases(
-            query_terms=query_terms,
-            limit=self.n_results,
-            subject_areas=self.subject_areas
-        )
+        # Search without year restriction to include older cases.
+        # Live search is best-effort: a network problem must never crash
+        # a chat turn, so fall back to local results on any error.
+        try:
+            live_cases = live_search_cases(
+                query_terms=query_terms,
+                limit=self.n_results,
+                subject_areas=self.subject_areas
+            )
+        except Exception as e:
+            print(f"  Live fallback search failed: {e}")
+            return local_results, False
 
         if not live_cases:
             return local_results, False
@@ -213,8 +220,11 @@ class EuGHChatbot:
             if not celex:
                 continue
 
-            # Fetch the document on-demand
-            doc = fetch_case_on_demand(celex)
+            # Fetch the document on-demand (best-effort)
+            try:
+                doc = fetch_case_on_demand(celex)
+            except Exception:
+                continue
             if doc:
                 # Format as search result
                 live_results.append({

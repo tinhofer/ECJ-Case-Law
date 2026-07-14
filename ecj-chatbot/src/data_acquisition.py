@@ -10,15 +10,53 @@ import time
 from dataclasses import dataclass, asdict
 from datetime import datetime
 from pathlib import Path
-from typing import Iterator
+from typing import Callable, Iterator
 
 import requests
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 from SPARQLWrapper import SPARQLWrapper, JSON
 from tqdm import tqdm
 
 
 # EUR-Lex CELLAR SPARQL Endpoint
 SPARQL_ENDPOINT = "https://publications.europa.eu/webapi/rdf/sparql"
+
+# EUR-Lex blocks requests with generic/bot user agents, so identify as a
+# regular browser. Used for both document fetches and SPARQL queries.
+USER_AGENT = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36"
+)
+
+
+class DataAcquisitionError(Exception):
+    """Raised when EUR-Lex cannot be reached or returns no usable data."""
+
+
+_http_session: requests.Session | None = None
+
+
+def get_http_session() -> requests.Session:
+    """Shared HTTP session with browser User-Agent and automatic retries."""
+    global _http_session
+    if _http_session is None:
+        session = requests.Session()
+        session.headers.update({
+            "User-Agent": USER_AGENT,
+            "Accept-Language": "de,en;q=0.8,fr;q=0.6",
+        })
+        retry = Retry(
+            total=3,
+            backoff_factor=1.0,
+            status_forcelist=[429, 500, 502, 503, 504],
+            allowed_methods=["GET"],
+        )
+        adapter = HTTPAdapter(max_retries=retry)
+        session.mount("https://", adapter)
+        session.mount("http://", adapter)
+        _http_session = session
+    return _http_session
 
 # URL templates for linking
 EURLEX_URL_TEMPLATE = "https://eur-lex.europa.eu/legal-content/DE/TXT/?uri=CELEX:{celex}"
@@ -162,21 +200,71 @@ def matches_subject_filter(
     return False
 
 
+def document_passes_subject_filter(
+    doc: "CaseLawDocument",
+    subject_keywords: dict[str, list[str]] | list[str] | None
+) -> bool:
+    """
+    Decide whether a document should be kept based on subject keywords.
+
+    subject_keywords may be a dict mapping language codes to keyword lists
+    (e.g. {"DE": [...], "EN": [...]}) or a plain list (treated as German-only
+    for backwards compatibility).
+
+    Fail-open policy: if no keyword list exists for the document's language,
+    or no Stichwort keywords could be extracted from the document header,
+    the document is KEPT. Filtering only drops documents whose extracted
+    keywords demonstrably do not match. This prevents the previous behavior
+    where all English/French documents (recent decisions without a German
+    translation) were silently discarded.
+    """
+    if not subject_keywords:
+        return True
+
+    if isinstance(subject_keywords, dict):
+        lang_keywords = subject_keywords.get(doc.language)
+    else:
+        lang_keywords = subject_keywords if doc.language == "DE" else None
+
+    if not lang_keywords:
+        return True  # No keywords for this language: keep the document
+    if not doc.keywords:
+        return True  # Stichwort extraction failed: keep the document
+
+    return matches_subject_filter(doc.keywords, lang_keywords)
+
+
 def _build_sparql_query(
     limit: int = 1000,
     offset: int = 0,
     year_from: int | None = None,
     year_to: int | None = None,
-    subject_areas: list[str] | None = None
+    subject_areas: list[str] | None = None,
+    celex_doc_types: list[str] | None = None
 ) -> str:
-    """Build a SPARQL query for case law metadata."""
+    """Build a SPARQL query for case law metadata.
 
-    # Build date filter
+    celex_doc_types restricts results by the CELEX document-type code
+    (positions 6-7 of a sector-6 CELEX number): CJ = ECJ judgment,
+    CO = ECJ order, CC = AG opinion, TJ = General Court judgment, etc.
+    Restricting to judgments keeps the result set small enough that the
+    CELLAR endpoint answers reliably instead of timing out.
+    """
+
+    # Build date filter. Use a typed range comparison instead of year(?date)
+    # so Virtuoso can use its date index; year() over the whole case-law
+    # corpus regularly hits the endpoint's execution-time limit.
     date_filter = ""
     if year_from:
-        date_filter += f'FILTER(year(?date) >= {year_from})\n'
+        date_filter += f'FILTER(?date >= "{year_from}-01-01"^^xsd:date)\n'
     if year_to:
-        date_filter += f'FILTER(year(?date) <= {year_to})\n'
+        date_filter += f'FILTER(?date <= "{year_to}-12-31"^^xsd:date)\n'
+
+    # CELEX document-type filter (e.g. only judgments of the Court of Justice)
+    celex_filter = ""
+    if celex_doc_types:
+        codes = "|".join(re.escape(c) for c in celex_doc_types)
+        celex_filter = f'FILTER(REGEX(STR(?celex), "^6[0-9]{{4}}({codes})"))\n'
 
     # Build EuroVoc subject area filter
     subject_filter = ""
@@ -205,9 +293,9 @@ def _build_sparql_query(
 
         # CELEX number (required)
         ?work cdm:resource_legal_celex ?celex .
-
-        # Date
-        OPTIONAL {{ ?work cdm:work_date_document ?date . }}
+        {celex_filter}
+        # Date (required so date filtering and ordering stay cheap)
+        ?work cdm:work_date_document ?date .
 
         # Title
         OPTIONAL {{
@@ -244,34 +332,64 @@ def _build_sparql_query(
     """
 
 
-def _execute_sparql_query(query: str) -> list[dict]:
-    """Execute a SPARQL query and return parsed case metadata."""
-    sparql = SPARQLWrapper(SPARQL_ENDPOINT)
-    sparql.setQuery(query)
-    sparql.setReturnFormat(JSON)
-    sparql.setTimeout(120)
+def _execute_sparql_query(
+    query: str,
+    timeout: int = 120,
+    retries: int = 3,
+    raise_on_error: bool = True
+) -> list[dict]:
+    """Execute a SPARQL query and return parsed case metadata.
 
-    try:
-        results = sparql.query().convert()
+    Retries transient failures with exponential backoff. If all attempts
+    fail and raise_on_error is True, raises DataAcquisitionError so that
+    callers (and the UI) can surface the problem instead of silently
+    proceeding with an empty dataset — which previously left users with
+    an empty search index and a chatbot that never found anything.
+    """
+    last_error: Exception | None = None
 
-        cases = []
-        for binding in results["results"]["bindings"]:
-            case = {
-                "celex": binding.get("celex", {}).get("value", ""),
-                "title": binding.get("title", {}).get("value", ""),
-                "date": binding.get("date", {}).get("value", ""),
-                "ecli": binding.get("ecli", {}).get("value"),
-                "case_number": binding.get("caseNumber", {}).get("value"),
-                "court": binding.get("courtLabel", {}).get("value", "Unknown"),
-                "document_type": binding.get("typeLabel", {}).get("value", "Judgment"),
-            }
-            cases.append(case)
+    for attempt in range(retries):
+        sparql = SPARQLWrapper(SPARQL_ENDPOINT, agent=USER_AGENT)
+        sparql.setQuery(query)
+        sparql.setReturnFormat(JSON)
+        sparql.setTimeout(timeout)
 
-        return cases
+        try:
+            results = sparql.query().convert()
 
-    except Exception as e:
-        print(f"SPARQL query failed: {e}")
-        return []
+            cases = []
+            for binding in results["results"]["bindings"]:
+                case = {
+                    "celex": binding.get("celex", {}).get("value", ""),
+                    "title": binding.get("title", {}).get("value", ""),
+                    "date": binding.get("date", {}).get("value", ""),
+                    "ecli": binding.get("ecli", {}).get("value"),
+                    "case_number": binding.get("caseNumber", {}).get("value"),
+                    "court": binding.get("courtLabel", {}).get("value", "Unknown"),
+                    "document_type": binding.get("typeLabel", {}).get("value", "Judgment"),
+                }
+                cases.append(case)
+
+            return cases
+
+        except Exception as e:
+            last_error = e
+            if attempt < retries - 1:
+                wait = 2 ** (attempt + 1)
+                print(f"SPARQL query failed (attempt {attempt + 1}/{retries}): {e}. "
+                      f"Retrying in {wait}s...")
+                time.sleep(wait)
+
+    message = (
+        f"EUR-Lex SPARQL endpoint could not be reached after {retries} attempts: "
+        f"{last_error}\n"
+        "Possible causes: no internet connection, a firewall/proxy blocking "
+        "publications.europa.eu, or the EUR-Lex service being temporarily down."
+    )
+    if raise_on_error:
+        raise DataAcquisitionError(message) from last_error
+    print(message)
+    return []
 
 
 def get_case_law_metadata(
@@ -280,7 +398,8 @@ def get_case_law_metadata(
     year_from: int | None = None,
     year_to: int | None = None,
     court: str = "Court of Justice",
-    subject_areas: list[str] | None = None
+    subject_areas: list[str] | None = None,
+    celex_doc_types: list[str] | None = None
 ) -> list[dict]:
     """
     Fetch case law metadata from EUR-Lex via SPARQL (single page).
@@ -297,14 +416,24 @@ def get_case_law_metadata(
         court: Court filter (Court of Justice, General Court, Civil Service Tribunal)
         subject_areas: Optional list of EuroVoc descriptor labels (English) to filter by.
                        Cases must have at least one matching descriptor.
+        celex_doc_types: Optional CELEX document-type codes (e.g. ["CJ"]) to
+                       restrict results to judgments etc.
 
     Returns:
         List of case metadata dictionaries
+
+    Raises:
+        DataAcquisitionError: if the SPARQL endpoint cannot be reached.
     """
-    # Try with subject area filter first
+    if celex_doc_types is None:
+        celex_doc_types = ["CJ"]
+
+    # Try with subject area filter first (best effort: don't raise here,
+    # since we retry without the filter anyway)
     if subject_areas:
-        query = _build_sparql_query(limit, offset, year_from, year_to, subject_areas)
-        cases = _execute_sparql_query(query)
+        query = _build_sparql_query(limit, offset, year_from, year_to,
+                                    subject_areas, celex_doc_types)
+        cases = _execute_sparql_query(query, retries=1, raise_on_error=False)
         if cases:
             return cases
         # EuroVoc descriptors are often not linked to case-law in CELLAR.
@@ -312,7 +441,8 @@ def get_case_law_metadata(
         print("  EuroVoc subject filter returned 0 results for case-law. "
               "Retrying without subject area filter...")
 
-    query = _build_sparql_query(limit, offset, year_from, year_to, subject_areas=None)
+    query = _build_sparql_query(limit, offset, year_from, year_to,
+                                subject_areas=None, celex_doc_types=celex_doc_types)
     return _execute_sparql_query(query)
 
 
@@ -320,21 +450,26 @@ def get_all_case_law_metadata(
     year_from: int | None = None,
     year_to: int | None = None,
     subject_areas: list[str] | None = None,
-    page_size: int = 1000
+    page_size: int = 1000,
+    max_cases: int | None = None,
+    celex_doc_types: list[str] | None = None
 ) -> list[dict]:
     """
-    Fetch ALL case law metadata from EUR-Lex via paginated SPARQL queries.
+    Fetch case law metadata from EUR-Lex via paginated SPARQL queries.
 
-    Automatically pages through all results until no more are returned.
+    Pages through results (newest first) until no more are returned or
+    max_cases is reached.
 
     Args:
         year_from: Filter by start year
         year_to: Filter by end year
         subject_areas: Optional list of EuroVoc descriptor labels for SPARQL filtering
         page_size: Number of results per SPARQL query (max ~10000 for the endpoint)
+        max_cases: Stop after this many results (newest first); None = no limit
+        celex_doc_types: CELEX document-type codes to include (default: judgments)
 
     Returns:
-        List of all case metadata dictionaries
+        List of case metadata dictionaries
     """
     all_cases = []
     offset = 0
@@ -347,7 +482,8 @@ def get_all_case_law_metadata(
             offset=offset,
             year_from=year_from,
             year_to=year_to,
-            subject_areas=subject_areas
+            subject_areas=subject_areas,
+            celex_doc_types=celex_doc_types
         )
 
         if not cases:
@@ -355,6 +491,11 @@ def get_all_case_law_metadata(
 
         all_cases.extend(cases)
         print(f"    Got {len(cases)} cases (total so far: {len(all_cases)})")
+
+        if max_cases is not None and len(all_cases) >= max_cases:
+            all_cases = all_cases[:max_cases]
+            print(f"    Reached configured maximum of {max_cases} cases.")
+            break
 
         # If we got fewer results than the page size, we've reached the end
         if len(cases) < page_size:
@@ -391,7 +532,7 @@ def fetch_document_text(celex: str, language: str = "DE") -> str | None:
     url = f"https://eur-lex.europa.eu/legal-content/{language}/TXT/HTML/?uri=CELEX:{celex}"
 
     try:
-        response = requests.get(url, timeout=30)
+        response = get_http_session().get(url, timeout=30)
         response.raise_for_status()
 
         # Check if we got a valid document (not a "not available" page)
@@ -517,17 +658,23 @@ def download_case_law_batch(
     output_dir: Path,
     year_from: int | None = None,
     year_to: int | None = None,
-    delay_seconds: float = 1.0,
+    delay_seconds: float = 0.5,
     subject_areas: list[str] | None = None,
-    subject_keywords_de: list[str] | None = None,
-    page_size: int = 1000
+    subject_keywords: dict[str, list[str]] | list[str] | None = None,
+    page_size: int = 1000,
+    max_cases: int | None = None,
+    celex_doc_types: list[str] | None = None,
+    progress_callback: Callable[[int, int, str], None] | None = None
 ) -> int:
     """
-    Download case law documents, paginating through ALL available results.
+    Download case law documents (newest first, bounded by max_cases).
 
-    Fetches all case metadata via paginated SPARQL queries, then downloads
-    full texts for each case. If subject_keywords_de is provided, each
+    Fetches case metadata via paginated SPARQL queries, then downloads
+    full texts for each case. If subject_keywords is provided, each
     document's Stichwort is checked and only matching documents are saved.
+
+    Cases rejected by the keyword filter are remembered in the checkpoint
+    file so they are never re-downloaded on subsequent runs.
 
     Args:
         output_dir: Directory to save documents
@@ -535,35 +682,57 @@ def download_case_law_batch(
         year_to: Filter by end year
         delay_seconds: Delay between requests to be respectful to the server
         subject_areas: Optional list of EuroVoc descriptor labels for SPARQL filtering
-        subject_keywords_de: Optional list of German keywords for Stichwort-based filtering
+        subject_keywords: Keyword lists per language (dict) or German-only (list)
+                          for Stichwort-based filtering
         page_size: Number of results per SPARQL page
+        max_cases: Maximum number of cases to process (newest first)
+        celex_doc_types: CELEX document-type codes to include (default: judgments)
+        progress_callback: Optional callable(done, total, current_celex) for UI progress
 
     Returns:
-        Number of successfully downloaded documents
+        Number of documents available locally (newly downloaded + already present)
+
+    Raises:
+        DataAcquisitionError: if EUR-Lex cannot be reached at all.
     """
 
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    print(f"Fetching all case metadata since {year_from or 'beginning'}...")
+    checkpoint = load_checkpoint(output_dir)
+    rejected_celex = set(checkpoint.get("rejected_celex", []))
+
+    print(f"Fetching case metadata since {year_from or 'beginning'}...")
     metadata_list = get_all_case_law_metadata(
         year_from=year_from,
         year_to=year_to,
         subject_areas=subject_areas,
-        page_size=page_size
+        page_size=page_size,
+        max_cases=max_cases,
+        celex_doc_types=celex_doc_types
     )
 
     filter_info = ""
-    if subject_keywords_de:
-        filter_info = f" (filtering by {len(subject_keywords_de)} Stichwort keywords)"
+    if subject_keywords:
+        filter_info = " (filtering by Stichwort keywords)"
     print(f"Found {len(metadata_list)} total cases. Downloading full texts{filter_info}...")
 
     downloaded = 0
     skipped = 0
     already_local = 0
-    for metadata in tqdm(metadata_list, desc="Downloading"):
+    fetch_failures = 0
+    total = len(metadata_list)
+    for i, metadata in enumerate(tqdm(metadata_list, desc="Downloading")):
         celex = metadata.get("celex", "")
         if not celex:
+            continue
+
+        if progress_callback:
+            progress_callback(i, total, celex)
+
+        # Skip cases previously rejected by the keyword filter
+        if celex in rejected_celex:
+            skipped += 1
             continue
 
         # Check if already downloaded
@@ -576,21 +745,43 @@ def download_case_law_batch(
         doc = create_case_document(metadata)
         if doc:
             # Apply Stichwort filter if configured
-            if subject_keywords_de and not matches_subject_filter(doc.keywords, subject_keywords_de):
+            if not document_passes_subject_filter(doc, subject_keywords):
                 skipped += 1
+                rejected_celex.add(celex)
                 continue
 
             with open(output_file, 'w', encoding='utf-8') as f:
                 json.dump(doc.to_dict(), f, ensure_ascii=False, indent=2)
             downloaded += 1
+        else:
+            fetch_failures += 1
 
         # Respectful delay
         time.sleep(delay_seconds)
+
+    if progress_callback:
+        progress_callback(total, total, "")
+
+    # Persist checkpoint (incl. rejected cases so they are never re-fetched)
+    checkpoint["rejected_celex"] = sorted(rejected_celex)
+    checkpoint["last_download_date"] = datetime.now().isoformat()
+    checkpoint["total_downloaded"] = checkpoint.get("total_downloaded", 0) + downloaded
+    save_checkpoint(output_dir, checkpoint)
 
     if skipped:
         print(f"  Skipped {skipped} cases not matching subject keywords")
     if already_local:
         print(f"  {already_local} cases already downloaded")
+    if fetch_failures:
+        print(f"  {fetch_failures} cases could not be fetched in any language")
+
+    if total > 0 and downloaded == 0 and already_local == 0:
+        raise DataAcquisitionError(
+            f"Found {total} cases in EUR-Lex metadata but could not download a "
+            f"single document text ({fetch_failures} fetch failures). EUR-Lex "
+            "may be blocking requests or unreachable from this network."
+        )
+
     print(f"Downloaded {downloaded} new documents to {output_dir}")
     return downloaded + already_local
 
@@ -638,7 +829,8 @@ def load_checkpoint(data_dir: Path) -> dict:
         "last_download_date": None,
         "last_case_date": None,
         "total_downloaded": 0,
-        "initial_year": None
+        "initial_year": None,
+        "rejected_celex": []
     }
 
 
@@ -694,36 +886,48 @@ def get_local_celex_numbers(data_dir: Path) -> set[str]:
 
 def incremental_update(
     data_dir: Path,
-    delay_seconds: float = 1.0,
+    delay_seconds: float = 0.5,
     max_new_cases: int = 500,
     subject_areas: list[str] | None = None,
-    subject_keywords_de: list[str] | None = None,
-    initial_year: int = 2018
+    subject_keywords: dict[str, list[str]] | list[str] | None = None,
+    initial_year: int = 2018,
+    max_initial_cases: int | None = None,
+    celex_doc_types: list[str] | None = None,
+    progress_callback: Callable[[int, int, str], None] | None = None
 ) -> int:
     """
     Download only new cases since the last update.
 
-    On first run (no local data), fetches ALL cases since initial_year
-    via paginated SPARQL queries. On subsequent runs, fetches the most
-    recent metadata and downloads any cases not yet present locally
-    (identified by CELEX number, not by date — this ensures that cases
-    added to CELLAR with a delay are not missed).
+    On first run (no local data), fetches cases since initial_year
+    (newest first, capped at max_initial_cases) via paginated SPARQL
+    queries. On subsequent runs, fetches the most recent metadata and
+    downloads any cases not yet present locally (identified by CELEX
+    number, not by date — this ensures that cases added to CELLAR with
+    a delay are not missed). Cases rejected by the keyword filter are
+    remembered and never re-downloaded.
 
     Args:
         data_dir: Directory containing case JSON files
         delay_seconds: Delay between requests
         max_new_cases: Number of recent cases to check per update
         subject_areas: Optional list of EuroVoc descriptor labels for SPARQL filtering
-        subject_keywords_de: Optional list of German keywords for Stichwort filtering
+        subject_keywords: Keyword lists per language (dict) or German-only (list)
         initial_year: Start year for initial download if no local data exists
+        max_initial_cases: Cap for the initial download (newest first)
+        celex_doc_types: CELEX document-type codes to include (default: judgments)
+        progress_callback: Optional callable(done, total, current_celex) for UI progress
 
     Returns:
         Number of new cases downloaded
+
+    Raises:
+        DataAcquisitionError: if EUR-Lex cannot be reached.
     """
     data_dir = Path(data_dir)
     data_dir.mkdir(parents=True, exist_ok=True)
 
     checkpoint = load_checkpoint(data_dir)
+    rejected_celex = set(checkpoint.get("rejected_celex", []))
     local_celex = get_local_celex_numbers(data_dir)
     has_data = len(local_celex) > 0
 
@@ -731,25 +935,31 @@ def incremental_update(
     if has_data:
         print(f"  {len(local_celex)} cases in local database")
     else:
-        print(f"  No local cases found - performing full initial download since {initial_year}")
+        print(f"  No local cases found - performing initial download since {initial_year}")
         return download_case_law_batch(
             output_dir=data_dir,
             year_from=initial_year,
             delay_seconds=delay_seconds,
             subject_areas=subject_areas,
-            subject_keywords_de=subject_keywords_de
+            subject_keywords=subject_keywords,
+            max_cases=max_initial_cases,
+            celex_doc_types=celex_doc_types,
+            progress_callback=progress_callback
         )
 
     # Fetch recent metadata and find cases not yet downloaded locally
     metadata_list = get_case_law_metadata(
         limit=max_new_cases,
-        subject_areas=subject_areas
+        subject_areas=subject_areas,
+        celex_doc_types=celex_doc_types
     )
 
-    # Filter to cases we don't have yet (by CELEX number)
+    # Filter to cases we don't have yet and haven't already rejected
     new_cases = [
         m for m in metadata_list
-        if m.get('celex', '') and m['celex'] not in local_celex
+        if m.get('celex', '')
+        and m['celex'] not in local_celex
+        and m['celex'] not in rejected_celex
     ]
 
     if not new_cases:
@@ -760,10 +970,14 @@ def incremental_update(
 
     downloaded = 0
     skipped = 0
-    for metadata in tqdm(new_cases, desc="Downloading new cases"):
+    total = len(new_cases)
+    for i, metadata in enumerate(tqdm(new_cases, desc="Downloading new cases")):
         celex = metadata.get("celex", "")
         if not celex:
             continue
+
+        if progress_callback:
+            progress_callback(i, total, celex)
 
         output_file = data_dir / f"{celex.replace(':', '_')}.json"
         if output_file.exists():
@@ -772,8 +986,9 @@ def incremental_update(
         doc = create_case_document(metadata)
         if doc:
             # Apply Stichwort filter if configured
-            if subject_keywords_de and not matches_subject_filter(doc.keywords, subject_keywords_de):
+            if not document_passes_subject_filter(doc, subject_keywords):
                 skipped += 1
+                rejected_celex.add(celex)
                 continue
 
             with open(output_file, 'w', encoding='utf-8') as f:
@@ -782,10 +997,14 @@ def incremental_update(
 
         time.sleep(delay_seconds)
 
+    if progress_callback:
+        progress_callback(total, total, "")
+
     # Update checkpoint
     checkpoint["last_download_date"] = datetime.now().isoformat()
     checkpoint["last_case_date"] = get_latest_case_date(data_dir)
     checkpoint["total_downloaded"] = checkpoint.get("total_downloaded", 0) + downloaded
+    checkpoint["rejected_celex"] = sorted(rejected_celex)
     save_checkpoint(data_dir, checkpoint)
 
     if skipped:
@@ -861,8 +1080,8 @@ def _build_live_search_query(
 
 
 def _execute_live_search_query(query: str) -> list[dict]:
-    """Execute a live search SPARQL query and return results."""
-    sparql = SPARQLWrapper(SPARQL_ENDPOINT)
+    """Execute a live search SPARQL query and return results (best effort)."""
+    sparql = SPARQLWrapper(SPARQL_ENDPOINT, agent=USER_AGENT)
     sparql.setQuery(query)
     sparql.setReturnFormat(JSON)
     sparql.setTimeout(60)
@@ -958,7 +1177,7 @@ def fetch_case_on_demand(celex: str) -> CaseLawDocument | None:
     LIMIT 1
     """
 
-    sparql = SPARQLWrapper(SPARQL_ENDPOINT)
+    sparql = SPARQLWrapper(SPARQL_ENDPOINT, agent=USER_AGENT)
     sparql.setQuery(query)
     sparql.setReturnFormat(JSON)
 
@@ -987,7 +1206,9 @@ if __name__ == "__main__":
         data_dir=data_dir,
         delay_seconds=cfg.download_delay,
         max_new_cases=cfg.update_limit,
-        subject_areas=cfg.subject_areas,
-        subject_keywords_de=cfg.subject_keywords_de,
-        initial_year=cfg.initial_year
+        subject_areas=cfg.active_subject_areas,
+        subject_keywords=cfg.subject_keywords,
+        initial_year=cfg.initial_year,
+        max_initial_cases=cfg.max_initial_cases,
+        celex_doc_types=cfg.celex_doc_types
     )

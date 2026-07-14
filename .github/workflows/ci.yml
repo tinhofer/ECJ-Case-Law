@@ -1,10 +1,12 @@
 name: CI
 
+# Run on every PR and on pushes to the default branch. The default branch
+# of this repo is not named main/master, so the previous main/master-only
+# trigger meant CI never ran at all.
 on:
   push:
-    branches: [main, master]
+    branches: [main, master, claude/initial-repo-setup-067NM]
   pull_request:
-    branches: [main, master]
 
 jobs:
   test:
