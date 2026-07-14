@@ -975,7 +975,7 @@ def download_case_law_batch(
     output_dir.mkdir(parents=True, exist_ok=True)
 
     checkpoint = load_checkpoint(output_dir)
-    rejected_celex = set(checkpoint.get("rejected_celex", []))
+    rejected_celex = _reset_rejected_if_keywords_changed(checkpoint, subject_keywords)
 
     print(f"Fetching case metadata since {year_from or 'beginning'}...")
     metadata_list = get_all_case_law_metadata(
@@ -1091,6 +1091,35 @@ def load_documents_from_disk(data_dir: Path) -> Iterator[CaseLawDocument]:
 CHECKPOINT_FILE = "download_checkpoint.json"
 
 
+def _keywords_fingerprint(subject_keywords) -> str:
+    """Stable fingerprint of the keyword configuration."""
+    import hashlib
+    if not subject_keywords:
+        return ""
+    payload = json.dumps(subject_keywords, sort_keys=True,
+                         ensure_ascii=False, default=str)
+    return hashlib.md5(payload.encode("utf-8")).hexdigest()
+
+
+def _reset_rejected_if_keywords_changed(checkpoint: dict, subject_keywords) -> set[str]:
+    """Return the rejected-CELEX set, cleared if the keyword lists changed.
+
+    Rejected cases are remembered so they aren't re-downloaded on every
+    start - but when the user BROADENS the keyword lists (themen.txt),
+    previously rejected cases must get a second chance, or the new
+    topics would silently never arrive.
+    """
+    fingerprint = _keywords_fingerprint(subject_keywords)
+    if checkpoint.get("keywords_fingerprint") != fingerprint:
+        if checkpoint.get("rejected_celex"):
+            print("  Schlagwortlisten haben sich geändert - "
+                  f"{len(checkpoint['rejected_celex'])} früher aussortierte "
+                  "Entscheidungen werden neu geprüft.")
+        checkpoint["keywords_fingerprint"] = fingerprint
+        checkpoint["rejected_celex"] = []
+    return set(checkpoint.get("rejected_celex", []))
+
+
 def load_checkpoint(data_dir: Path) -> dict:
     """
     Load the download checkpoint from disk.
@@ -1204,7 +1233,7 @@ def incremental_update(
     data_dir.mkdir(parents=True, exist_ok=True)
 
     checkpoint = load_checkpoint(data_dir)
-    rejected_celex = set(checkpoint.get("rejected_celex", []))
+    rejected_celex = _reset_rejected_if_keywords_changed(checkpoint, subject_keywords)
     local_celex = get_local_celex_numbers(data_dir)
     has_data = len(local_celex) > 0
 

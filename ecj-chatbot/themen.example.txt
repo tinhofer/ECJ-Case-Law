@@ -1,0 +1,166 @@
+# =============================================================================
+# THEMEN-KONFIGURATION für den EuGH-Chatbot
+# =============================================================================
+#
+# So verwenden Sie diese Datei:
+#   1. Kopieren Sie diese Vorlage:   copy themen.example.txt themen.txt
+#   2. Öffnen Sie themen.txt mit Notepad und passen Sie die Listen an.
+#   3. Starten Sie die App neu - die Änderungen gelten ab dem nächsten
+#      Daten-Update ("Neue Entscheidungen laden" bzw. App-Start).
+#
+# Regeln:
+#   - Ein Eintrag pro Zeile.
+#   - Alles hinter einem #-Zeichen ist Kommentar und wird ignoriert.
+#   - Eine Sektion ganz weglassen = eingebaute Standardliste bleibt aktiv.
+#   - Eine Sektion leer lassen = kein Filter für diese Sprache
+#     (alle Urteile werden behalten).
+#   - Wenn Sie die Schlagwortlisten ERWEITERN, prüft die App früher
+#     aussortierte Urteile automatisch neu.
+#
+# =============================================================================
+
+# -----------------------------------------------------------------------------
+# Schlagwörter (deutsch): Ein Urteil wird behalten, wenn eines dieser Wörter
+# in seiner "Stichwort"-Zeile vorkommt (Groß-/Kleinschreibung egal,
+# Teilwort-Treffer zählen: "Arbeitnehmer" trifft auch "Leiharbeitnehmer").
+# -----------------------------------------------------------------------------
+[schlagwoerter_de]
+# Arbeitsrecht / Sozialpolitik
+Sozialpolitik
+Arbeitnehmer
+Arbeitsvertrag
+Arbeitszeit
+Arbeitsrecht
+Arbeitsbedingungen
+Beschäftigung
+Entlassung
+Kündigung
+Betriebsübergang
+Leiharbeit
+Teilzeitarbeit
+befristeter Arbeitsvertrag
+Entsendung von Arbeitnehmern
+entsandte Arbeitnehmer
+Wanderarbeitnehmer
+Freizügigkeit der Arbeitnehmer
+soziale Sicherheit
+Sozialversicherung
+Elternurlaub
+Jahresurlaub
+Massenentlassung
+Unterrichtung und Anhörung
+# Datenschutz / Privatsphäre / KI
+Datenschutz
+personenbezogene Daten
+Schutz der Privatsphäre
+Vorratsdatenspeicherung
+Datenübermittlung
+künstliche Intelligenz
+# Diskriminierung / Gleichbehandlung / Grundrechte
+Diskriminierung
+Gleichbehandlung
+Gleichstellung
+Alter
+Geschlecht
+Behinderung
+Religion
+sexuelle Ausrichtung
+Grundrechte
+Charta der Grundrechte
+
+# -----------------------------------------------------------------------------
+# Schlagwörter (englisch): für Urteile, die noch nicht auf Deutsch vorliegen
+# -----------------------------------------------------------------------------
+[schlagwoerter_en]
+social policy
+worker
+employment
+employment contract
+working time
+working conditions
+dismissal
+collective redundancies
+transfer of undertakings
+temporary agency work
+part-time work
+fixed-term work
+posting of workers
+posted workers
+migrant worker
+freedom of movement for workers
+social security
+parental leave
+annual leave
+information and consultation
+data protection
+personal data
+protection of privacy
+data retention
+data transfer
+artificial intelligence
+discrimination
+equal treatment
+equality
+age
+sex
+disability
+religion
+sexual orientation
+fundamental rights
+Charter of Fundamental Rights
+
+# -----------------------------------------------------------------------------
+# Schlagwörter (französisch)
+# -----------------------------------------------------------------------------
+[schlagwoerter_fr]
+politique sociale
+travailleur
+emploi
+contrat de travail
+temps de travail
+conditions de travail
+licenciement
+licenciements collectifs
+transfert d'entreprise
+travail intérimaire
+travail à temps partiel
+travail à durée déterminée
+détachement de travailleurs
+libre circulation des travailleurs
+sécurité sociale
+congé parental
+congé annuel
+information et consultation
+protection des données
+données à caractère personnel
+vie privée
+conservation des données
+transfert de données
+intelligence artificielle
+discrimination
+égalité de traitement
+égalité
+âge
+sexe
+handicap
+religion
+orientation sexuelle
+droits fondamentaux
+charte des droits fondamentaux
+
+# -----------------------------------------------------------------------------
+# Rechtsakte (CELEX-Nummern): Für jeden Rechtsakt werden SÄMTLICHE
+# EuGH-Urteile geladen, die ihn zitieren - vollständig, ohne Zeit- und
+# Schlagwortfilter. Text hinter der Nummer dient nur der Beschriftung.
+#
+# CELEX-Nummern finden Sie auf EUR-Lex in der Adresszeile des Rechtsakts,
+# z.B. https://eur-lex.europa.eu/legal-content/DE/TXT/?uri=CELEX:32016R0679
+# -----------------------------------------------------------------------------
+[rechtsakte]
+# 32016R0679    # DSGVO / Datenschutz-Grundverordnung
+# 31995L0046    # Datenschutz-Richtlinie 95/46 (Vorgängerin der DSGVO)
+# 32003L0088    # Arbeitszeit-Richtlinie 2003/88
+# 32000L0078    # Gleichbehandlungsrahmen-Richtlinie 2000/78
+# 32001L0023    # Betriebsübergangs-Richtlinie 2001/23
+# 32008L0104    # Leiharbeits-Richtlinie 2008/104
+# 31999L0070    # Befristungs-Richtlinie 1999/70

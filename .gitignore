@@ -6,6 +6,9 @@ venv/
 
 # Downloaded case data & search index
 ecj-chatbot/data/
+
+# User-specific theme configuration (template: themen.example.txt)
+ecj-chatbot/themen.txt
 .pnp
 .pnp.js
 

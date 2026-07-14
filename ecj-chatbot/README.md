@@ -258,6 +258,22 @@ ECJ_LLM_MODEL=claude-opus-4-8    # Höchste Qualität (Standard)
 ECJ_LLM_MODEL=claude-sonnet-5    # Schneller und günstiger
 ```
 
+### Rechtsgebiete und Themen anpassen (themen.txt)
+
+Welche Urteile in die lokale Datenbank aufgenommen werden, steuern Sie über eine einfache Textdatei:
+
+```cmd
+copy themen.example.txt themen.txt
+notepad themen.txt
+```
+
+Die Datei enthält zwei Arten von Einträgen:
+
+- **Schlagwörter** (`[schlagwoerter_de]` / `_en` / `_fr`): Ein Urteil wird behalten, wenn eines dieser Wörter in seiner Stichwort-Zeile vorkommt. Sektion leer lassen = kein Filter (alle Urteile behalten).
+- **Rechtsakte** (`[rechtsakte]`): CELEX-Nummern von Rechtsakten (z.B. `32016R0679` für die DSGVO). Für jeden Rechtsakt werden **sämtliche** EuGH-Urteile geladen, die ihn zitieren — vollständig, ohne Zeit- und Schlagwortfilter.
+
+Änderungen gelten ab dem nächsten Daten-Update (App-Start oder Button „Neue Entscheidungen laden"). Werden die Schlagwortlisten erweitert, prüft die App früher aussortierte Urteile automatisch neu.
+
 ## Beispiel-Interaktion
 
 ```
