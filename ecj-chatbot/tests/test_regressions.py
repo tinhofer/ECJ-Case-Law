@@ -188,15 +188,35 @@ class TestClientSideDocTypeFiltering:
         from unittest.mock import patch
         import data_acquisition as da
 
-        # Two full raw pages (only some CJ), then a short page ending the set
+        # Two full raw pages (only some CJ), then an empty page ending the set
         pages = [
             ([{"celex": f"62025CJ{i:04d}", "document_type": ""} for i in range(2)], 5),
             ([{"celex": f"62024CJ{i:04d}", "document_type": ""} for i in range(2)], 5),
-            ([], 1),
+            ([], 0),
         ]
         with patch.object(da, "_fetch_metadata_page", side_effect=pages):
             result = da.get_all_case_law_metadata(page_size=5)
         assert len(result) == 4  # both full pages were consumed
+
+    def test_partial_pages_do_not_end_pagination(self):
+        """CELLAR's anytime timeout returns partial pages; only an empty
+        page means the result set is exhausted (field: 104 rows for a
+        1000-row request despite thousands of matches)."""
+        from unittest.mock import patch
+        import data_acquisition as da
+
+        pages = [
+            ([{"celex": "62025CJ0001", "document_type": ""}], 104),  # partial!
+            ([{"celex": "62024CJ0002", "document_type": ""}], 50),   # partial!
+            ([], 0),
+        ]
+        with patch.object(da, "_fetch_metadata_page", side_effect=pages) as mock:
+            result = da.get_all_case_law_metadata(page_size=1000)
+        assert len(result) == 2          # kept paging past the short pages
+        assert mock.call_count == 3
+        # Offset advances by rows actually received (104, then +50)
+        offsets = [call.kwargs["offset"] for call in mock.call_args_list]
+        assert offsets == [0, 104, 154]
 
 
 class TestSparqlErrorHandling:

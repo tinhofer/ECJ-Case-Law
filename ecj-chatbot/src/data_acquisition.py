@@ -558,8 +558,9 @@ def get_all_case_law_metadata(
     all_cases = []
     offset = 0
     page = 1
+    max_pages = 500  # safety backstop
 
-    while True:
+    while page <= max_pages:
         print(f"  Fetching metadata page {page} (offset {offset})...")
         cases, raw_count = _fetch_metadata_page(
             limit=page_size,
@@ -570,6 +571,10 @@ def get_all_case_law_metadata(
             celex_doc_types=celex_doc_types
         )
 
+        # Only an EMPTY page means the result set is exhausted. Under load
+        # the CELLAR endpoint returns PARTIAL pages (its "anytime" timeout),
+        # so a short page must not end pagination - field testing showed a
+        # first page of only 104 rows despite thousands of matches.
         if raw_count == 0:
             break
 
@@ -582,12 +587,9 @@ def get_all_case_law_metadata(
             print(f"    Reached configured maximum of {max_cases} cases.")
             break
 
-        # A short RAW page means we've reached the end of the result set.
-        # (The filtered page is usually shorter - that must not stop paging.)
-        if raw_count < page_size:
-            break
-
-        offset += page_size
+        # Advance by the rows actually received, not by the requested
+        # page size, so partial pages don't skip over results.
+        offset += raw_count
         page += 1
 
     # Deduplicate by CELEX number (pagination can sometimes return overlaps)
