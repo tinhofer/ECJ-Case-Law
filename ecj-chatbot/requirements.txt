@@ -6,22 +6,31 @@
 #
 # Verify your setup afterwards with: python diagnose.py
 
+# Lower bounds are kept at the oldest patched release of each package, so that
+# an existing environment is not silently left on a vulnerable version.
+
 # Data Acquisition
 SPARQLWrapper>=2.0.0
-requests>=2.32.4
+requests>=2.33.0          # CVE-2026-25645: predictable temp path in extract_zipped_paths()
 beautifulsoup4>=4.12.0
 lxml>=6.1.1
 
 # Vector Database & Embeddings
-chromadb>=0.5.23
-sentence-transformers>=2.2.0
+# chromadb: CVE-2026-45829 (code injection via trust_remote_code) affects 1.0.0+
+# and has no patched release yet. It is reachable only through the Chroma *server*
+# REST API; this project embeds ChromaDB via PersistentClient and never starts a
+# server, so the vulnerable endpoint is not exposed. Re-check when a fix ships.
+chromadb>=1.5.9
+sentence-transformers>=5.2.0   # first release whose pin allows transformers 5.x
+transformers>=5.5.0       # pulled in by sentence-transformers, which still allows 4.x;
+                          # 4.x carries ~25 advisories incl. remote code execution
 
 # LLM API
 anthropic>=0.40.0
 
 # Web Frontend
-streamlit>=1.30.0
+streamlit>=1.54.0         # CVE-2024-42474, CVE-2026-10804, CVE-2026-33682
 
 # Utilities
-python-dotenv>=1.0.0
-tqdm>=4.66.0
+python-dotenv>=1.2.2      # CVE-2026-28684: symlink following in set_key()/unset_key()
+tqdm>=4.66.3              # CVE-2024-34062: arbitrary code execution via CLI args
