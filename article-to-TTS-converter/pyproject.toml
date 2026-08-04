@@ -10,7 +10,8 @@ readme = "README.md"
 license = {text = "MIT"}
 requires-python = ">=3.11"
 dependencies = [
-    "pymupdf>=1.24.0",
+    # pymupdf >=1.26.7 fixes CVE-2026-3029 (path traversal / arbitrary file write in CLI).
+    "pymupdf>=1.26.7",
     "python-docx>=1.1.0",
     "langdetect>=1.0.9",
     "click>=8.1.0",
