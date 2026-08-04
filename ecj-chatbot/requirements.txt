@@ -8,20 +8,36 @@
 
 # Data Acquisition
 SPARQLWrapper>=2.0.0
-requests>=2.32.4
+# requests >=2.33.0 fixes CVE-2026-25645 (predictable temp path in extract_zipped_paths()).
+requests>=2.33.0
 beautifulsoup4>=4.12.0
 lxml>=6.1.1
 
 # Vector Database & Embeddings
-chromadb>=0.5.23
-sentence-transformers>=2.2.0
+# CVE-2026-45829 (pre-auth RCE, CVSS 10.0) has no patched release, but it is reachable
+# only through the ChromaDB *server* REST endpoint. This project embeds ChromaDB via
+# PersistentClient (src/embeddings.py) and never starts a server, so the vulnerable
+# surface is not exposed. Staying on the 1.x line also avoids the 9 starlette
+# advisories that the old 0.5.x floor pulled in. Re-check when a fix ships.
+chromadb>=1.5.9
+# sentence-transformers CVE-2026-68770 (RCE via trust_remote_code bypass) has no confirmed patched version;
+# pin to a recent release. Do not pass trust_remote_code=True in code.
+# Floor must be >=5.2.0 so the resolve accepts transformers>=5.5.0 below —
+# earlier sentence-transformers releases pin transformers<5.0.0.
+sentence-transformers>=5.2.0
+# transformers 4.x carries ~25 advisories including RCE. Pinned explicitly because
+# sentence-transformers only bounds it upward, not downward.
+transformers>=5.5.0
 
 # LLM API
 anthropic>=0.40.0
 
 # Web Frontend
-streamlit>=1.30.0
+# streamlit >=1.54.0 clears CVE-2024-42474, CVE-2026-33682, CVE-2026-10804.
+streamlit>=1.54.0
 
 # Utilities
-python-dotenv>=1.0.0
-tqdm>=4.66.0
+# python-dotenv >=1.2.2 fixes CVE-2026-28684 (symlink following in set_key()/unset_key()).
+python-dotenv>=1.2.2
+# tqdm >=4.66.3 fixes CVE-2024-34062 (CLI-arg eval RCE).
+tqdm>=4.66.3
